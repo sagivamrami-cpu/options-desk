@@ -1,0 +1,3 @@
+ts_utc,ts_ny,symbol,source,spot,gex_total,flip_level,spot_vs_flip_pct,regime,iv30,rv20,vrp,skew_front,term_slope,inverted,vanna,charm,pcr_oi,front_expiry,front_max_pain,tilt
+2026-08-08T20:16:36+00:00,2026-08-08T16:16:36-04:00,QQQ,yahoo,723.03,2046362990.0,712.1248,1.508,long_gamma,0.18704,0.26095,-0.07391,0.01808,0.0634,False,462105720.0,-462162921.0,1.2348,2026-08-10,704.0,constructive
+2026-08-08T20:16:37+00:00,2026-08-08T16:16:37-04:00,GLD,yahoo,398.47,480876387.0,376.4463,5.527,long_gamma,0.23804,0.2601,-0.02206,-0.00354,0.05664,False,36489112.0,-41408308.0,0.7869,2026-08-10,379.0,constructive

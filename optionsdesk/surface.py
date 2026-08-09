@@ -44,7 +44,7 @@ from scipy.optimize import least_squares
 from . import blackscholes as bs
 
 __all__ = [
-    "SVIParams", "SurfaceFits", "fit_svi", "fit_all_expiries", "otm_smile", "smile_residuals",
+    "SVIParams", "SurfaceFits", "fit_svi", "implied_forward", "forward", "fit_all_expiries", "otm_smile", "smile_residuals",
     "butterfly_arbitrage", "calendar_arbitrage", "risk_neutral_density",
     "density_stats", "edge_after_costs",
 ]
@@ -115,10 +115,57 @@ class SVIParams:
 
 
 def forward(spot: float, T: float, r: float = 0.04, q: float = 0.0) -> float:
+    """Theoretical forward. Prefer implied_forward() when quotes are available."""
     return spot * np.exp((r - q) * T)
 
 
-def fit_svi(strikes, ivs, spot, T, r=0.04, q=0.0, weights=None) -> SVIParams | None:
+def implied_forward(grp: pd.DataFrame, spot: float, T: float, r: float = 0.04,
+                    n_strikes: int = 6) -> tuple[float, float]:
+    """Back out the forward from put-call parity instead of guessing a yield.
+
+    Parity:  C - P = e^{-rT} (F - K)   =>   F = K + e^{rT} (C - P)
+
+    This matters more than it looks. Assuming q=0 on an ETF that actually pays
+    a dividend puts the forward too high, which systematically cheapens every
+    modelled put and enriches every call. Measured on live QQQ that showed up
+    as OTM puts pricing 27-64 cents under the market while calls printed over
+    it -- a bias that would make every short-put structure look like free money.
+
+    The market tells you the correct forward for free: it is embedded in the
+    call-put price difference at any strike where both sides are quoted. Taking
+    the median across the strikes nearest spot makes it robust to one bad quote.
+
+    Returns (forward, implied_carry_rate). Falls back to the theoretical
+    forward with q=0 when parity cannot be measured.
+    """
+    both = grp[grp["mid"].notna() & (grp["bid"] > 0)]
+    if both.empty:
+        return forward(spot, T, r, 0.0), 0.0
+
+    piv = both.pivot_table(index="strike", columns="right", values="mid", aggfunc="first")
+    if not {"C", "P"}.issubset(piv.columns):
+        return forward(spot, T, r, 0.0), 0.0
+    piv = piv.dropna(subset=["C", "P"])
+    if piv.empty:
+        return forward(spot, T, r, 0.0), 0.0
+
+    # Parity is most reliable near the money, where both sides are liquid and
+    # neither is dominated by intrinsic value.
+    piv = piv.reindex((piv.index.to_series() - spot).abs().sort_values().index)
+    use = piv.head(n_strikes)
+    fwds = use.index.to_numpy() + np.exp(r * T) * (use["C"].to_numpy() - use["P"].to_numpy())
+    F = float(np.median(fwds))
+
+    if not np.isfinite(F) or F <= 0 or abs(F / spot - 1.0) > 0.2:
+        return forward(spot, T, r, 0.0), 0.0
+
+    # F = S e^{(r-q)T}  =>  q = r - ln(F/S)/T
+    carry = float(r - np.log(F / spot) / T) if T > 0 else 0.0
+    return F, carry
+
+
+def fit_svi(strikes, ivs, spot, T, r=0.04, q=0.0, weights=None,
+            F: float | None = None) -> SVIParams | None:
     """Least-squares SVI fit of one expiry slice. None if it cannot be fit.
 
     Weighted in total-variance space. Vega weighting is the desk default --
@@ -132,7 +179,8 @@ def fit_svi(strikes, ivs, spot, T, r=0.04, q=0.0, weights=None) -> SVIParams | N
     if len(strikes) < 5:
         return None
 
-    F = forward(spot, T, r, q)
+    if F is None:
+        F = forward(spot, T, r, q)
     k = np.log(strikes / F)
     w = (ivs ** 2) * T
 
@@ -242,14 +290,28 @@ def fit_all_expiries(df: pd.DataFrame, spot: float, r: float = 0.04,
     fits, rejected = {}, {}
     for exp, grp in df.groupby("expiry"):
         T = float(grp["T"].iloc[0])
-        F = forward(spot, T, r, q)
+        # Imply the forward from parity rather than trusting an assumed yield.
+        F, carry = implied_forward(grp, spot, T, r)
         g = otm_smile(grp, F, max_k=max_k)
 
         if len(g) < min_quotes:
             rejected[pd.Timestamp(exp)] = f"only {len(g)} clean OTM quotes"
             continue
 
-        p = fit_svi(g["strike"], g["iv"], spot, T, r, q)
+        # Re-solve implied vol against the IMPLIED carry. The IVs arriving from
+        # metrics.prepare() were inverted with an assumed q=0, so fitting them
+        # against a parity-implied forward mixes two different forwards and
+        # leaves a systematic put-versus-call bias in the fitted smile.
+        g = g.assign(iv=bs.implied_vol_chain(
+            g["mid"].to_numpy(), spot, g["strike"].to_numpy(),
+            g["T"].to_numpy(), r, carry, g["right"].to_numpy(),
+        ))
+        g = g[g["iv"].notna() & (g["iv"] > 0.01) & (g["iv"] < 3.0)]
+        if len(g) < min_quotes:
+            rejected[pd.Timestamp(exp)] = f"only {len(g)} quotes survived IV re-solve"
+            continue
+
+        p = fit_svi(g["strike"], g["iv"], spot, T, r, carry, F=F)
         if p is None:
             rejected[pd.Timestamp(exp)] = "SVI fit did not converge"
             continue
@@ -263,6 +325,7 @@ def fit_all_expiries(df: pd.DataFrame, spot: float, r: float = 0.04,
             continue
 
         fits[pd.Timestamp(exp)] = {"params": p, "T": T, "F": F,
+                                   "implied_carry": carry,
                                    "n_quotes": int(len(g))}
 
     return SurfaceFits(fits, rejected)

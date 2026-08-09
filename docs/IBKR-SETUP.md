@@ -157,14 +157,19 @@ sudo pmset -a sleep 0 disablesleep 1     # revert with disablesleep 0
 
 ```bash
 # every 5 minutes, GLD + QQQ, regular trading hours only
-./.venv/bin/python scripts/install_launchd.py --interval 300
+./.venv/bin/python scripts/install_launchd.py --job collect --interval 300
 
-# check it
+# check both jobs
 ./.venv/bin/python scripts/install_launchd.py --status
 
 # remove it
-./.venv/bin/python scripts/install_launchd.py --uninstall
+./.venv/bin/python scripts/install_launchd.py --job collect --uninstall
 ```
+
+The intraday collector is only worth running **once Gateway is up**. On Yahoo
+data it re-reads the same once-a-day open interest every five minutes, which
+tells you nothing new. The `--job daily` agent is the one that matters without
+a broker connection.
 
 The job runs on a fixed interval around the clock; the collector itself no-ops
 outside 09:30–16:00 ET. Each pass appends one row per symbol to

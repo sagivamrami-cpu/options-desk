@@ -8,13 +8,15 @@ no Gateway at all.
 
 from __future__ import annotations
 
+import socket
+
 from .base import CHAIN_COLUMNS, ChainSnapshot, ChainSource
-from .ibkr import IBKRSource
+from .ibkr import DEFAULT_PORTS, IBKRSource
 from .yahoo import YahooSource
 
 __all__ = [
-    "CHAIN_COLUMNS", "ChainSnapshot", "ChainSource",
-    "IBKRSource", "YahooSource", "get_source", "fetch",
+    "CHAIN_COLUMNS", "ChainSnapshot", "ChainSource", "DEFAULT_PORTS",
+    "IBKRSource", "YahooSource", "get_source", "fetch", "gateway_is_up",
 ]
 
 _SOURCES = {"ibkr": IBKRSource, "yahoo": YahooSource}
@@ -29,14 +31,41 @@ def get_source(name: str) -> ChainSource:
         ) from None
 
 
+def gateway_is_up(host: str = "127.0.0.1", ports=None, timeout: float = 0.25) -> bool:
+    """Cheap TCP probe for a listening TWS/Gateway.
+
+    Used to keep source='auto' honest. Without this, every run with no Gateway
+    pays the cost of ib_insync building a client, opening four sockets and
+    unwinding four exceptions before it gives up. A quarter-second probe against
+    a closed port returns instantly (connection refused), so 'auto' costs
+    effectively nothing when you have no broker connection yet.
+    """
+    for port in (ports or DEFAULT_PORTS):
+        s = socket.socket()
+        s.settimeout(timeout)
+        try:
+            s.connect((host, port))
+            return True
+        except OSError:
+            continue
+        finally:
+            s.close()
+    return False
+
+
 def fetch(symbol: str, source: str = "auto", max_expiries: int = 8) -> ChainSnapshot:
     """Pull one snapshot.
 
-    source='auto'  try IBKR, silently fall back to Yahoo (records a warning)
+    source='auto'  use IBKR only if a Gateway is actually listening, else Yahoo
     source='ibkr'  fail loudly if TWS/Gateway is unreachable
     source='yahoo' skip IBKR entirely
     """
     source = (source or "auto").lower()
+
+    if source == "auto" and not gateway_is_up():
+        # No broker connection configured yet -- this is a normal state, not a
+        # degraded one, so it does not warrant a warning on every report.
+        return YahooSource().fetch(symbol, max_expiries=max_expiries)
 
     if source in ("ibkr", "auto"):
         try:
@@ -46,7 +75,7 @@ def fetch(symbol: str, source: str = "auto", max_expiries: int = 8) -> ChainSnap
                 raise
             snap = YahooSource().fetch(symbol, max_expiries=max_expiries)
             snap.warnings.insert(
-                0, f"IBKR unavailable ({_short(exc)}); fell back to delayed Yahoo data"
+                0, f"IBKR reachable but the pull failed ({_short(exc)}); used Yahoo instead"
             )
             return snap
 

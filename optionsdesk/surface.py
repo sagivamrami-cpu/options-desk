@@ -505,7 +505,7 @@ def calendar_arbitrage(fits: dict) -> list[dict]:
 # ======================================================================
 
 def risk_neutral_density(params: SVIParams, F: float, T: float, r: float = 0.04,
-                         k_range: float = 0.6, n: int = 401) -> pd.DataFrame:
+                         k_range: float = 3.0, n: int = 20001) -> pd.DataFrame:
     """Breeden-Litzenberger: the market's implied probability distribution.
 
         q(K) = exp(rT) * d2C/dK2
@@ -527,11 +527,26 @@ def risk_neutral_density(params: SVIParams, F: float, T: float, r: float = 0.04,
     dens = np.exp(r * T) * d2C
     dens = np.maximum(dens, 0.0)          # clip the numerical noise in the wings
 
-    mass = np.sum(dens * dK)
-    if mass > 0:
-        dens = dens / mass                # normalise to a true density
+    # Mass BEFORE normalising is the truncation diagnostic. A proper
+    # arbitrage-free smile integrates to 1 over (0, inf); anything materially
+    # below that means the grid is cutting off real probability.
+    #
+    # This is not cosmetic. Normalising a truncated window silently rescales
+    # it into a different distribution, and because the window is symmetric in
+    # LOG-moneyness it is asymmetric in strike, so the rescaled mean lands
+    # above the forward. Measured on a synthetic surface, k_range=0.6 put
+    # E[S_T] 154 bp above F -- which biases every expected value computed
+    # against it. The default range is wide for exactly this reason.
+    raw_mass = float(np.sum(dens * dK))
+    if raw_mass > 0:
+        dens = dens / raw_mass
 
-    return pd.DataFrame({"strike": K, "log_moneyness": k, "iv": iv, "density": dens})
+    out = pd.DataFrame({"strike": K, "log_moneyness": k, "iv": iv, "density": dens})
+    out.attrs["raw_mass"] = raw_mass
+    # E[S_T] must equal F under the risk-neutral measure. Reported so callers
+    # can assert on it rather than assume it.
+    out.attrs["martingale_error"] = float(np.sum(K * dens * dK) / F - 1.0)
+    return out
 
 
 def density_stats(dens: pd.DataFrame, spot: float) -> dict:

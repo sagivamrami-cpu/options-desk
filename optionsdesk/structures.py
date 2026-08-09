@@ -211,7 +211,12 @@ def empirical_density(history: pd.DataFrame, spot: float, horizon_days: float,
     # Recentring isolates that. Pass recenter_to=None to keep the historical
     # drift, but then read the result as a directional view, not as an edge.
     if recenter_to is not None and recenter_to > 0:
-        rets = rets - rets.mean() + np.log(recenter_to / spot)
+        # Match the ARITHMETIC mean, not the mean log return. Shifting log
+        # returns so their mean equals log(F/S) sets the MEDIAN to F and leaves
+        # E[S_T] above it by the Jensen term exp(sigma^2/2) -- about 24 bp at
+        # 18% vol over 45 days, which is small but systematic and biases every
+        # comparison against the risk-neutral density.
+        rets = rets - np.log(np.mean(np.exp(rets))) + np.log(recenter_to / spot)
 
     terminal = spot * np.exp(rets)
 

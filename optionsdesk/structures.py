@@ -166,7 +166,7 @@ def structure_greeks(df: pd.DataFrame, struct: Structure, spot: float) -> dict:
 
 def empirical_density(history: pd.DataFrame, spot: float, horizon_days: float,
                       grid: np.ndarray, lookback: int = 500,
-                      block: bool = True) -> np.ndarray:
+                      block: bool = True, recenter_to: float | None = None) -> np.ndarray:
     """The distribution the underlying has ACTUALLY produced, not the one
     options price.
 
@@ -198,6 +198,20 @@ def empirical_density(history: pd.DataFrame, spot: float, horizon_days: float,
     rets = rets[np.isfinite(rets)]
     if len(rets) < 30:
         return np.array([])
+
+    # Remove the sample's realized drift and re-centre on the forward.
+    #
+    # This is not a detail. A lookback that happens to cover a bull market
+    # carries that trend inside it, and every bullish structure then scores a
+    # large "edge" that is really just a bet the last two years repeat. Drift
+    # is the least stationary thing in a return series and the least defensible
+    # to extrapolate; the SHAPE -- volatility, skew, fat tails -- is what
+    # actually persists and what the variance risk premium is paid on.
+    #
+    # Recentring isolates that. Pass recenter_to=None to keep the historical
+    # drift, but then read the result as a directional view, not as an edge.
+    if recenter_to is not None and recenter_to > 0:
+        rets = rets - rets.mean() + np.log(recenter_to / spot)
 
     terminal = spot * np.exp(rets)
 
@@ -349,7 +363,7 @@ def edge_report(df: pd.DataFrame, struct: Structure, spot: float,
                                  k_range=grid_width, n=n)
     grid = rnd["strike"].to_numpy()
     rn_dens = rnd["density"].to_numpy()
-    emp = empirical_density(history, spot, T * 365.0, grid)
+    emp = empirical_density(history, spot, T * 365.0, grid, recenter_to=fit["F"])
 
     out = {"structure": str(struct), "name": struct.name}
     rn = evaluate(df, struct, spot, grid, rn_dens, fits, horizon, r=r)

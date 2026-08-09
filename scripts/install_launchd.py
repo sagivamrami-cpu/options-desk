@@ -39,6 +39,7 @@ LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 LABELS = {
     "daily": "com.optionsdesk.daily",
     "collect": "com.optionsdesk.collect",
+    "watch": "com.optionsdesk.watch",
 }
 
 # launchd hands jobs a minimal PATH; git and open need a real one.
@@ -69,6 +70,25 @@ def build_daily(args) -> dict:
         "WorkingDirectory": str(ROOT),
         "StandardOutPath": str(LOG_DIR / "daily.log"),
         "StandardErrorPath": str(LOG_DIR / "daily.err.log"),
+        "RunAtLoad": False,
+        "EnvironmentVariables": _ENV,
+    }
+
+
+def build_watch(args) -> dict:
+    """Continuous scan that alerts only when the state changes."""
+    cmd = [str(PYTHON), str(ROOT / "scripts" / "watch.py"),
+           "--symbols", args.symbols, "--source", args.source,
+           "--market-hours-only", "--quiet"]
+    if args.notify:
+        cmd.append("--notify")
+    return {
+        "Label": LABELS["watch"],
+        "ProgramArguments": cmd,
+        "StartInterval": args.interval,
+        "WorkingDirectory": str(ROOT),
+        "StandardOutPath": str(LOG_DIR / "watch.log"),
+        "StandardErrorPath": str(LOG_DIR / "watch.err.log"),
         "RunAtLoad": False,
         "EnvironmentVariables": _ENV,
     }
@@ -113,7 +133,8 @@ def install(args):
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    spec = build_daily(args) if args.job == "daily" else build_collect(args)
+    spec = {"daily": build_daily, "watch": build_watch,
+            "collect": build_collect}[args.job](args)
     path = plist_path(args.job)
     path.write_bytes(plistlib.dumps(spec))
 
@@ -128,6 +149,11 @@ def install(args):
         print(f"  runs    weekdays at {args.at} local, {args.symbols} via {args.source}")
         print(f"  opens   {'yes' if args.open else 'no'}")
         print(f"  logs    {LOG_DIR / 'daily.log'}")
+    elif args.job == "watch":
+        every = f"{args.interval}s" if args.interval < 60 else f"{args.interval // 60} min"
+        print(f"  runs    every {every}, RTH only, {args.symbols} via {args.source}")
+        print(f"  alerts  only on state change; notify {'on' if args.notify else 'off'}")
+        print(f"  logs    {LOG_DIR / 'watch.log'}")
     else:
         every = f"{args.interval}s" if args.interval < 60 else f"{args.interval // 60} min"
         print(f"  runs    every {every}, RTH only, {args.symbols} via {args.source}")
@@ -153,7 +179,7 @@ def status(_):
         state = next((l.strip() for l in r.stdout.splitlines() if "state =" in l), "")
         exit_ = next((l.strip() for l in r.stdout.splitlines() if "last exit code" in l), "")
         print(f"{job:8s} loaded   {state}   {exit_}")
-    for name in ("daily.log", "collect.log"):
+    for name in ("daily.log", "watch.log", "collect.log"):
         log = LOG_DIR / name
         if log.exists():
             tail = log.read_text(encoding="utf-8").splitlines()[-5:]
@@ -173,13 +199,14 @@ def _uid():
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--job", choices=["daily", "collect"], default="daily")
+    ap.add_argument("--job", choices=["daily", "watch", "collect"], default="daily")
     ap.add_argument("--at", default="15:30", help="daily: local HH:MM (default 15:30)")
     ap.add_argument("--open", action="store_true", help="daily: open the report when done")
     ap.add_argument("--interval", type=int, default=300, help="collect: seconds between runs")
     ap.add_argument("--symbols", default="GLD,QQQ")
     ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "yahoo"])
     ap.add_argument("--push", action="store_true", help="collect: git push each run")
+    ap.add_argument("--notify", action="store_true", help="watch: macOS notification on alert")
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--status", action="store_true")
     args = ap.parse_args()

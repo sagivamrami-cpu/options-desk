@@ -270,3 +270,70 @@ def test_undefined_risk_is_excluded_from_ranking(snapshot):
                 "max_loss": float("-inf"), "edge": 99.0, "pop_empirical": 0.9}]
     ranked = X.rank(reports, require_defined_risk=True)
     assert list(ranked["name"]) == ["capped"]
+
+
+# ======================================================================
+# Alerting
+# ======================================================================
+
+def _fake_scan(spot=500.0, flip=490.0, vrp=-0.05, regime="long_gamma",
+               n_positive=0, best_ev=0.0):
+    import pandas as pd
+    cands = pd.DataFrame([{
+        "name": "bull put 480/475", "expiry": "2026-09-18", "cost": -50.0,
+        "ev_empirical": best_ev, "edge": 12.0, "pop_empirical": 0.8,
+        "max_loss": -450.0, "slippage": 4.0,
+    }] * max(n_positive, 0))
+    return {
+        "symbol": "TEST", "spot": spot, "candidates": cands, "rejected": {},
+        "regime": {"gamma_regime": regime, "flip_level": flip,
+                   "spot_vs_flip_pct": (spot - flip) / spot * 100,
+                   "net_gex": 1e9, "iv30": 0.20, "rv20": 0.25, "vrp": vrp},
+    }
+
+
+def test_alert_fires_on_flip_crossing_not_on_level():
+    from optionsdesk import alerts as AL
+    prev = {"spot_vs_flip_pct": 2.0, "regime": "long_gamma", "vrp": -0.05,
+            "n_positive_ev": 0, "best_ev": ""}
+    # Still above the flip: no crossing alert.
+    quiet = AL.evaluate(_fake_scan(spot=505.0, flip=490.0), prev)
+    assert not [a for a in quiet if a.kind == "gamma_flip_crossed"]
+
+    # Now below it: exactly one crossing alert, and it must be critical.
+    crossed = AL.evaluate(_fake_scan(spot=485.0, flip=490.0), prev)
+    hits = [a for a in crossed if a.kind == "gamma_flip_crossed"]
+    assert len(hits) == 1 and hits[0].severity == "critical"
+    assert "AMPLIFIES" in hits[0].detail["implication"]
+
+
+def test_opportunity_alert_does_not_repeat():
+    """Regression: an earlier version re-sent an identical alert every pass for
+    as long as the condition held, which is how an alert channel becomes noise."""
+    from optionsdesk import alerts as AL
+    scan = _fake_scan(n_positive=2, best_ev=25.0)
+
+    first = AL.evaluate(scan, None)
+    assert [a for a in first if a.kind == "positive_expectancy"]
+
+    prev = {"spot_vs_flip_pct": 2.0, "regime": "long_gamma", "vrp": -0.05,
+            "n_positive_ev": 2, "best_ev": 25.0}
+    again = AL.evaluate(scan, prev)
+    assert not [a for a in again if a.kind == "positive_expectancy"]
+
+    # A materially better opportunity does get through.
+    better = AL.evaluate(_fake_scan(n_positive=2, best_ev=60.0), prev)
+    assert [a for a in better if a.kind == "positive_expectancy"]
+
+
+def test_vrp_sign_change_alerts_once():
+    from optionsdesk import alerts as AL
+    prev = {"spot_vs_flip_pct": 2.0, "regime": "long_gamma", "vrp": 0.03,
+            "n_positive_ev": 0, "best_ev": ""}
+    flipped = AL.evaluate(_fake_scan(vrp=-0.02), prev)
+    hits = [a for a in flipped if a.kind == "vrp_sign_change"]
+    assert len(hits) == 1 and "NEGATIVE" in hits[0].message
+
+    prev2 = dict(prev, vrp=-0.02)
+    assert not [a for a in AL.evaluate(_fake_scan(vrp=-0.02), prev2)
+                if a.kind == "vrp_sign_change"]

@@ -54,6 +54,8 @@ def build_daily(args) -> dict:
     hh, mm = _parse_at(args.at)
     cmd = [str(PYTHON), str(ROOT / "scripts" / "daily_report.py"),
            "--symbols", args.symbols, "--source", args.source]
+    if args.telegram:
+        cmd.append("--telegram")
     if args.open:
         # Chain the open so the report surfaces instead of sitting in out/.
         script = (f'{_q(cmd)} && open "$(ls -t {ROOT}/out/report-*.html | head -1)"')
@@ -82,6 +84,8 @@ def build_watch(args) -> dict:
            "--market-hours-only", "--quiet"]
     if args.notify:
         cmd.append("--notify")
+    if args.telegram:
+        cmd.append("--telegram")
     return {
         "Label": LABELS["watch"],
         "ProgramArguments": cmd,
@@ -207,6 +211,7 @@ def main():
     ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "yahoo"])
     ap.add_argument("--push", action="store_true", help="collect: git push each run")
     ap.add_argument("--notify", action="store_true", help="watch: macOS notification on alert")
+    ap.add_argument("--telegram", action="store_true", help="send to Telegram")
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--status", action="store_true")
     args = ap.parse_args()

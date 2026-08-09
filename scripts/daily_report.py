@@ -47,6 +47,8 @@ def main() -> int:
     p.add_argument("--expiries", type=int, default=8, help="how many expiries to pull")
     p.add_argument("--rate", type=float, default=0.04, help="risk-free rate")
     p.add_argument("--out", default=str(ROOT / "out"))
+    p.add_argument("--telegram", action="store_true",
+                   help="send the digest to Telegram (scripts/setup_telegram.py)")
     p.add_argument("--no-persist", action="store_true",
                    help="skip appending to the IV history file")
     args = p.parse_args()
@@ -91,6 +93,18 @@ def main() -> int:
 
     print(_digest(analyses, failures))
     print(f"\nHTML  {html_path}\nJSON  {json_path}")
+
+    if args.telegram and analyses:
+        from optionsdesk import notify
+        try:
+            if notify.send_report(analyses):
+                print("TG    sent")
+            else:
+                print("TG    not configured -- run scripts/setup_telegram.py")
+        except Exception as exc:
+            # Delivery is not the job. A failed send must never lose the report.
+            print(f"TG    failed: {exc}", file=sys.stderr)
+
     return 0
 
 

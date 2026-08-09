@@ -65,6 +65,7 @@ def main():
     ap.add_argument("--dte", nargs=2, type=float, default=[0, 45])
     ap.add_argument("--market-hours-only", action="store_true")
     ap.add_argument("--notify", action="store_true", help="macOS notification on alert")
+    ap.add_argument("--telegram", action="store_true", help="push alerts to Telegram")
     ap.add_argument("--quiet", action="store_true", help="print only when a rule fires")
     args = ap.parse_args()
 
@@ -140,6 +141,13 @@ def main():
         print("=" * 78)
         print(digest)
         print()
+
+        if args.telegram:
+            from optionsdesk import notify
+            try:
+                notify.send_alerts(fired)
+            except Exception as exc:
+                print(f"[watch] telegram failed: {exc}", file=sys.stderr)
 
         if args.notify and sys.platform == "darwin":
             top = fired[0]

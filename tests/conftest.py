@@ -33,6 +33,17 @@ HALF_SPREAD = 0.02          # $0.02 each side, so mid is the exact model price
 
 
 def _svi_total_variance(k, a, b, rho, m, sigma):
+    """Raw SVI total variance at a FIXED per-year level (a, b are per-year).
+
+    build_chain multiplies this by T per slice -- see the note there. Without
+    that scaling, every expiry gets the SAME total variance regardless of
+    maturity, and iv = sqrt(w/T) explodes at short T. That is not a hypothetical:
+    the first version of this fixture generated a 7-day ATM call priced at
+    105.7% implied vol purely from this, which silently made a calendar spread
+    look like a $92 debit against a $2,231 expected value. The fitting code
+    was never wrong -- it correctly recovered whatever surface the fixture
+    handed it. The fixture was generating a surface no real market has.
+    """
     return a + b * (rho * (k - m) + np.sqrt((k - m) ** 2 + sigma ** 2))
 
 
@@ -47,7 +58,13 @@ def build_chain(spot=SPOT, dtes=(7, 21, 45), r=RATE, q=TRUE_CARRY,
         lo, hi = spot * (1 - width), spot * (1 + width)
         strikes = np.arange(round(lo), round(hi) + strike_step, strike_step)
         k = np.log(strikes / F)
-        w = _svi_total_variance(k, **TRUE_SVI)
+        # Scale by T: SVI is a per-slice (single-maturity) parametrization: a
+        # real surface is a family of independently shaped slices, each with
+        # its OWN total variance level, not one curve reused unscaled across
+        # every expiry. Multiplying by T here gives a roughly flat ATM vol
+        # term structure -- a plain, realistic default -- instead of total
+        # variance that does not grow with time at all.
+        w = T * _svi_total_variance(k, **TRUE_SVI)
         iv = np.sqrt(np.maximum(w, 1e-8) / T)
 
         for right in ("C", "P"):

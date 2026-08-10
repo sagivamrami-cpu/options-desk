@@ -653,3 +653,103 @@ def test_strike_crossing_alert_fires_once_via_full_pipeline(snapshot, tmp_path):
                          "daily": {"status": "none", "just_closed": [], "event_risk": None,
                                    "target_expiry": None}}}
     assert not [a for a in ledger_alerts(st_still) if a.kind == "strike_crossed"]
+
+
+# ======================================================================
+# Newly added structures: protective put, straddle, iron butterfly, diagonal
+# ======================================================================
+
+def test_protective_put_caps_downside_and_keeps_upside(snapshot):
+    """Mirror of test_covered_call_caps_upside_and_keeps_downside: a protective
+    put is long stock + long put, so downside is capped near the strike and
+    upside tracks the stock roughly one-for-one -- the OPPOSITE shape from a
+    covered call, which is exactly the point of buying one."""
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[-1]
+    pp = X.generate_protective_puts(df, exp, SPOT, (0.20,))
+    assert pp, "no protective put generated"
+    struct = pp[0]
+    strike = [l.strike for l in struct.legs if not l.is_stock][0]
+
+    grid = np.linspace(SPOT * 0.5, SPOT * 1.5, 2001)
+    val = X._value_at_horizon(struct, grid, pd.Timestamp(exp), {}, r=RATE) * X.MULT
+
+    below = val[grid < strike * 0.9]
+    assert below.std() < 1.0, "protective put is not capped below the strike"
+
+    hi = grid > SPOT * 1.1
+    slope = np.polyfit(grid[hi], val[hi], 1)[0]
+    assert 95 < slope < 105, f"upside slope {slope:.1f}, expected ~100 (tracks the stock)"
+
+
+def test_straddle_long_short_are_mirror_images(snapshot):
+    """Long and short straddle at the same strike must be exact opposites of
+    each other before costs -- the payoff a long straddle collects at any
+    given spot is precisely what the short straddle pays out there."""
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[-1]
+    structs = X.generate_straddles(df, exp, SPOT)
+    long_st = next(s for s in structs if not s.meta.get("undefined_risk"))
+    short_st = next(s for s in structs if s.meta.get("undefined_risk"))
+
+    grid = np.linspace(SPOT * 0.5, SPOT * 1.5, 2001)
+    v_long = X._value_at_horizon(long_st, grid, pd.Timestamp(exp), {}, r=RATE)
+    v_short = X._value_at_horizon(short_st, grid, pd.Timestamp(exp), {}, r=RATE)
+    assert np.allclose(v_long, -v_short, atol=1e-6)
+
+    px_long = X.price_structure(df, long_st)
+    px_short = X.price_structure(df, short_st)
+    assert px_long["executable_cost"] > 0, "long straddle should be a debit"
+    assert px_short["executable_cost"] < 0, "short straddle should be a credit"
+
+
+def test_iron_butterfly_payoff_bounds(snapshot):
+    """Max profit is the net credit; max loss is the wing width minus that
+    credit -- the same closed form as an iron condor, just narrower."""
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[-1]
+    ibs = X.generate_iron_butterflies(df, exp, SPOT, (3,))
+    assert ibs, "no iron butterfly generated"
+    struct = ibs[0]
+    call_wing = max(l.strike for l in struct.legs if l.right == "C")
+    body = struct.meta["body"]
+    width = (call_wing - body) * 100
+
+    grid = np.linspace(SPOT * 0.5, SPOT * 1.5, 4001)
+    dens = np.ones_like(grid)
+    res = X.evaluate(df, struct, SPOT, grid, dens, {}, exp, r=RATE, use_executable=False)
+    credit = -res["cost"]
+
+    assert res["max_profit"] == pytest.approx(credit, abs=1.5)
+    assert res["max_loss"] == pytest.approx(-(width - credit), abs=1.5)
+
+
+def test_diagonal_is_rejected_when_strikes_coincide(snapshot):
+    """A same-strike 'diagonal' is just a calendar; generate_diagonals must
+    not double up on what generate_calendars already produces."""
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exps = sorted(df["expiry"].unique())
+    near, far = exps[0], exps[-1]
+    out = X.generate_diagonals(df, near, far, SPOT, "C",
+                               near_delta=0.50, far_delta=0.50)
+    for st in out:
+        strikes = {l.strike for l in st.legs}
+        assert len(strikes) == 2, "diagonal returned a same-strike (calendar) combination"
+
+
+def test_scanner_includes_all_new_families(snapshot):
+    """End-to-end: the scanner must actually surface every new generator, not
+    just the structures module in isolation."""
+    import optionsdesk.scanner as scanner_mod
+    orig = scanner_mod.fetch
+    scanner_mod.fetch = lambda *a, **kw: snapshot
+    try:
+        scan = scanner_mod.scan_symbol("TEST", dte_range=(0, 45), aggressive=True)
+    finally:
+        scanner_mod.fetch = orig
+
+    names = pd.concat([scan["candidates"]["name"], scan["stock_based"]["name"]]) \
+        if len(scan["stock_based"]) else scan["candidates"]["name"]
+    joined = " ".join(names.tolist())
+    for needle in ("protective put", "iron butterfly", "straddle"):
+        assert needle in joined, f"'{needle}' never appeared in scanner output"

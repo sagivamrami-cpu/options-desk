@@ -46,9 +46,10 @@ __all__ = [
     "Leg", "Structure", "price_structure", "structure_greeks",
     "empirical_density", "evaluate", "edge_report",
     "generate_verticals", "generate_butterflies", "generate_condors",
-    "generate_strangles", "generate_calendars", "rank",
-    "generate_covered_calls", "generate_cash_secured_puts", "generate_pmcc",
-    "wheel_state",
+    "generate_iron_butterflies", "generate_strangles", "generate_straddles",
+    "generate_calendars", "generate_diagonals", "rank",
+    "generate_covered_calls", "generate_cash_secured_puts",
+    "generate_protective_puts", "generate_pmcc", "wheel_state",
 ]
 
 MULT = 100
@@ -500,6 +501,40 @@ def generate_condors(df, expiry, spot, short_deltas=(0.20, 0.16, 0.10),
     return out
 
 
+def generate_iron_butterflies(df, expiry, spot, wing_widths=(2, 3, 4), min_oi=25):
+    """Iron butterfly: short straddle at the money, wings bought further out to
+    cap the risk. The condor's tighter, higher-premium sibling -- same short
+    strike for both legs instead of a strangle's two different strikes, so it
+    collects more credit and needs the underlying to sit still more precisely.
+    """
+    calls = df[(df["expiry"] == pd.Timestamp(expiry)) & (df["right"] == "C")
+               & (df["open_interest"] >= min_oi) & (df["bid"] > 0)]
+    puts = df[(df["expiry"] == pd.Timestamp(expiry)) & (df["right"] == "P")
+              & (df["open_interest"] >= min_oi) & (df["bid"] > 0)]
+    if calls.empty or puts.empty:
+        return []
+    call_ks, put_ks = np.sort(calls["strike"].unique()), np.sort(puts["strike"].unique())
+    common = np.intersect1d(call_ks, put_ks)
+    if not len(common):
+        return []
+    atm = float(common[np.abs(common - spot).argmin()])
+    ci = int(np.where(call_ks == atm)[0][0])
+    pi = int(np.where(put_ks == atm)[0][0])
+
+    out = []
+    for w in wing_widths:
+        if ci + w >= len(call_ks) or pi - w < 0:
+            continue
+        call_wing, put_wing = float(call_ks[ci + w]), float(put_ks[pi - w])
+        out.append(Structure(
+            f"iron butterfly {atm:g} w{w}",
+            [Leg(expiry, "C", atm, -1), Leg(expiry, "P", atm, -1),
+             Leg(expiry, "C", call_wing, +1), Leg(expiry, "P", put_wing, +1)],
+            {"body": atm, "wing_width": w},
+        ))
+    return out
+
+
 def generate_strangles(df, expiry, spot, short_deltas=(0.20, 0.16, 0.10), min_oi=25):
     """Short strangles. Undefined risk -- included so the ranking can show what
     you are being paid for taking it, not as a recommendation."""
@@ -517,6 +552,35 @@ def generate_strangles(df, expiry, spot, short_deltas=(0.20, 0.16, 0.10), min_oi
             out.append(Structure(f"short strangle {d:.0%}d", legs,
                                  {"short_delta_target": d, "undefined_risk": True}))
     return out
+
+
+def generate_straddles(df, expiry, spot, min_oi=25):
+    """ATM straddle: same-strike call and put, long or short.
+
+    Distinct from a strangle (different strikes, cheaper, wider before it pays)
+    -- a straddle is priced almost entirely in at-the-money vega and gamma. The
+    LONG side has defined risk (the debit paid) and is a real bet on movement
+    exceeding what is priced in. The SHORT side has undefined risk on both
+    tails at once and is tagged as such, the same convention as
+    generate_strangles, so a caller can exclude it from default ranking.
+    """
+    calls = df[(df["expiry"] == pd.Timestamp(expiry)) & (df["right"] == "C")
+               & (df["open_interest"] >= min_oi) & (df["bid"] > 0)]
+    puts = df[(df["expiry"] == pd.Timestamp(expiry)) & (df["right"] == "P")
+              & (df["open_interest"] >= min_oi) & (df["bid"] > 0)]
+    if calls.empty or puts.empty:
+        return []
+    common = np.intersect1d(calls["strike"].unique(), puts["strike"].unique())
+    if not len(common):
+        return []
+    k = float(common[np.abs(common - spot).argmin()])
+
+    return [
+        Structure(f"long straddle {k:g}", [Leg(expiry, "C", k, +1), Leg(expiry, "P", k, +1)],
+                 {"strike": k}),
+        Structure(f"short straddle {k:g}", [Leg(expiry, "C", k, -1), Leg(expiry, "P", k, -1)],
+                 {"strike": k, "undefined_risk": True}),
+    ]
 
 
 def generate_calendars(df, near, far, spot, right="C", offsets=(0,), min_oi=25):
@@ -635,6 +699,73 @@ def generate_cash_secured_puts(df, expiry, spot, short_deltas=(0.30, 0.20, 0.16)
              "note": "payoff-identical to a covered call at this strike"},
         ))
     return out
+
+
+def generate_protective_puts(df, expiry, spot, put_deltas=(0.30, 0.20, 0.16),
+                             min_oi=25):
+    """Long 100 shares plus one long put -- insurance against a crash.
+
+    Marketed as "protecting your gains", which is true but incomplete: the
+    premium paid is a permanent drag identical to any insurance premium. If
+    the crash does not happen -- most of the time -- the put simply expires and
+    the cost was pure cost. Read its value the same way as a covered call's:
+    against holding the shares outright, not against zero. A protective put
+    caps the downside; it does not improve the expected return of holding the
+    stock, and anyone selling it as a way to "have your cake and eat it too"
+    is skipping the premium paid.
+    """
+    g = df[(df["expiry"] == pd.Timestamp(expiry)) & (df["right"] == "P")
+           & (df["open_interest"] >= min_oi) & (df["bid"] > 0)].copy()
+    if g.empty:
+        return []
+    out = []
+    for d in put_deltas:
+        g["dd"] = (g["delta"].abs() - d).abs()
+        k = float(g.sort_values("dd").iloc[0]["strike"])
+        out.append(Structure(
+            f"protective put {k:g}",
+            [Leg(expiry, "S", 0.0, +1), Leg(expiry, "P", k, +1)],
+            {"spot": spot, "put_delta_target": d, "requires_shares": True,
+             "benchmark": "holding the shares outright, unhedged"},
+        ))
+    return out
+
+
+def generate_diagonals(df, near_expiry, far_expiry, spot, right="C",
+                       near_delta=0.30, far_delta=0.70, min_oi=10):
+    """Short near-dated leg, long far-dated leg, at DIFFERENT strikes -- a
+    calendar with directional tilt baked into the strike choice.
+
+    This is PMCC's general form: PMCC is specifically a diagonal built with a
+    deep-ITM, long-dated long call (long_delta near 1.0) against a short-dated
+    short call. The same caveat applies here and applies harder the shallower
+    the long leg's delta: the long leg carries vega that stock never does, so
+    falling implied volatility hurts this position even when price does
+    exactly what you wanted. Unlike generate_pmcc, this does not enforce a
+    single assignment-safety rule, because a diagonal's risk shape depends on
+    which side (call or put) and which direction (bullish or bearish tilt) it
+    is built for -- check the specific combination by hand before trusting it.
+    """
+    near = df[(df["expiry"] == pd.Timestamp(near_expiry)) & (df["right"] == right)
+              & (df["open_interest"] >= min_oi) & (df["bid"] > 0)].copy()
+    far = df[(df["expiry"] == pd.Timestamp(far_expiry)) & (df["right"] == right)
+             & (df["open_interest"] >= min_oi) & (df["bid"] > 0)].copy()
+    if near.empty or far.empty:
+        return []
+
+    near["dd"] = (near["delta"].abs() - near_delta).abs()
+    far["dd"] = (far["delta"].abs() - far_delta).abs()
+    nk = float(near.sort_values("dd").iloc[0]["strike"])
+    fk = float(far.sort_values("dd").iloc[0]["strike"])
+    if nk == fk:
+        return []          # same strike is a calendar; generate_calendars covers it
+
+    return [Structure(
+        f"diagonal {right} {fk:g}/{nk:g} {pd.Timestamp(near_expiry).date()}/"
+        f"{pd.Timestamp(far_expiry).date()}",
+        [Leg(far_expiry, right, fk, +1), Leg(near_expiry, right, nk, -1)],
+        {"near_delta_target": near_delta, "far_delta_target": far_delta},
+    )]
 
 
 def generate_pmcc(df, near_expiry, far_expiry, spot, long_delta=0.80,

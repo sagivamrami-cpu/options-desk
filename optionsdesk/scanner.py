@@ -132,13 +132,23 @@ def _candidates(df, expiry, spot, aggressive: bool = False,
     if stock_strategies:
         out += X.generate_covered_calls(df, expiry, spot, (0.30, 0.20, 0.16))
         out += X.generate_cash_secured_puts(df, expiry, spot, (0.30, 0.20, 0.16))
+        out += X.generate_protective_puts(df, expiry, spot, (0.30, 0.20, 0.16))
     out += X.generate_verticals(df, expiry, spot, "P", deltas, (1, 2, 3))
     out += X.generate_verticals(df, expiry, spot, "C", deltas, (1, 2, 3))
     out += X.generate_condors(df, expiry, spot, (0.20, 0.16, 0.10), (2, 3))
+    out += X.generate_iron_butterflies(df, expiry, spot, (2, 3, 4))
     out += X.generate_butterflies(df, expiry, spot, (1, 2, 3), "C")
     out += X.generate_butterflies(df, expiry, spot, (1, 2, 3), "P")
+
+    # generate_straddles returns both sides; only the long one has defined
+    # risk (the debit paid), so it joins the default menu on its own merit --
+    # the short side follows the same undefined-risk gate as short strangles.
+    straddles = X.generate_straddles(df, expiry, spot)
+    out += [s for s in straddles if not s.meta.get("undefined_risk")]
+
     if aggressive:
         out += X.generate_strangles(df, expiry, spot, (0.20, 0.16, 0.10))
+        out += [s for s in straddles if s.meta.get("undefined_risk")]
     return out
 
 
@@ -226,7 +236,9 @@ def scan_symbol(symbol: str, source: str = "auto", max_expiries: int = 8,
             rn = np.interp(grid, rnd["strike"], rnd["density"])
             emp = X.empirical_density(snap.history, spot, f["T"] * 365.0, grid,
                                       recenter_to=f["F"])
-            for st in X.generate_calendars(df, near, far, spot, "C", (0, 1, -1)):
+            two_expiry = (X.generate_calendars(df, near, far, spot, "C", (0, 1, -1))
+                         + X.generate_diagonals(df, near, far, spot, "C"))
+            for st in two_expiry:
                 rn_res = X.evaluate(df, st, spot, grid, rn, fits, near, r=r,
                                     use_executable=True)
                 if "error" in rn_res or not rn_res["tradeable"]:

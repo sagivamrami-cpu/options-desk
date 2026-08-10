@@ -35,6 +35,17 @@ CARRY = {
     "SPY": {"div_yield": 0.012},
     "IWM": {"div_yield": 0.010},
     "SLV": {"div_yield": 0.0},
+    # IBIT holds spot bitcoin directly and pays no distribution -- same
+    # zero-carry logic as GLD.
+    "IBIT": {"div_yield": 0.0},
+    # SOXL is a 3x DAILY-leveraged semiconductor ETF (Direxion). It rebalances
+    # every close, which means realized vol and options IV both run far above
+    # a normal equity ETF, and its return over any period longer than a day
+    # is NOT 3x the index return -- daily rebalancing decay compounds against
+    # a holder in a choppy tape even if the underlying index is flat. Treat
+    # every skew/VRP intuition tuned on GLD and QQQ as unverified here until
+    # it has actually been checked against SOXL's own data.
+    "SOXL": {"div_yield": 0.0},
 }
 DEFAULT_SYMBOLS = ["GLD", "QQQ"]
 

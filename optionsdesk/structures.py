@@ -47,6 +47,8 @@ __all__ = [
     "empirical_density", "evaluate", "edge_report",
     "generate_verticals", "generate_butterflies", "generate_condors",
     "generate_strangles", "generate_calendars", "rank",
+    "generate_covered_calls", "generate_cash_secured_puts", "generate_pmcc",
+    "wheel_state",
 ]
 
 MULT = 100
@@ -55,20 +57,38 @@ MULT = 100
 # ======================================================================
 @dataclass(frozen=True)
 class Leg:
-    """One contract. qty > 0 is long, qty < 0 is short."""
+    """One leg. qty > 0 is long, qty < 0 is short.
+
+    right is 'C', 'P', or 'S' for stock. A stock leg carries qty in ROUND LOTS
+    of 100 shares so the same contract multiplier applies to every leg and the
+    arithmetic stays uniform -- one covered call is +1 S against -1 C.
+
+    Stock legs exist because the strategies retail actually trades most --
+    covered calls, cash-secured puts, the wheel, the poor man's covered call --
+    are not pure option structures, and a generator that cannot express stock
+    cannot express any of them.
+    """
     expiry: pd.Timestamp
-    right: str          # 'C' or 'P'
+    right: str          # 'C', 'P', or 'S' (stock)
     strike: float
     qty: int = 1
 
+    @property
+    def is_stock(self) -> bool:
+        return self.right == "S"
+
     def intrinsic(self, spot):
         spot = np.asarray(spot, dtype=float)
+        if self.right == "S":
+            return spot                       # a share is worth the share price
         if self.right == "C":
             return np.maximum(spot - self.strike, 0.0)
         return np.maximum(self.strike - spot, 0.0)
 
     def __str__(self):
         side = "+" if self.qty > 0 else "-"
+        if self.is_stock:
+            return f"{side}{abs(self.qty) * MULT} shares"
         return f"{side}{abs(self.qty)} {pd.Timestamp(self.expiry).date()} {self.strike:g}{self.right}"
 
 
@@ -114,6 +134,14 @@ def price_structure(df: pd.DataFrame, struct: Structure) -> dict:
     missing, widest = [], 0.0
 
     for leg in struct.legs:
+        if leg.is_stock:
+            # Equity spreads on liquid ETFs are a cent or two against option
+            # spreads measured in dimes; treating stock as mid-executable is
+            # accurate enough and avoids inventing a number.
+            mid_cost += leg.qty * struct.meta.get("spot", 0.0)
+            exec_cost += leg.qty * struct.meta.get("spot", 0.0)
+            continue
+
         q = _quote(df, leg)
         if q is None or not np.isfinite(q["mid"]):
             missing.append(str(leg))
@@ -142,6 +170,9 @@ def structure_greeks(df: pd.DataFrame, struct: Structure, spot: float) -> dict:
     g = {"delta": 0.0, "gamma": 0.0, "vega": 0.0, "theta": 0.0,
          "vanna": 0.0, "charm": 0.0}
     for leg in struct.legs:
+        if leg.is_stock:
+            g["delta"] += leg.qty * 1.0       # one share is one delta
+            continue
         q = _quote(df, leg)
         if q is None:
             continue
@@ -253,6 +284,9 @@ def _value_at_horizon(struct: Structure, grid: np.ndarray, horizon: pd.Timestamp
     horizon = pd.Timestamp(horizon)
 
     for leg in struct.legs:
+        if leg.is_stock:
+            total += leg.qty * grid          # stock is worth spot at any horizon
+            continue
         exp = pd.Timestamp(leg.expiry)
         if exp <= horizon:
             total += leg.qty * leg.intrinsic(grid)
@@ -531,3 +565,152 @@ def rank(reports: list[dict], require_defined_risk: bool = True,
 
     d["edge_per_risk"] = d["edge"] / d["max_loss"].abs()
     return d.sort_values("edge_per_risk", ascending=False).reset_index(drop=True)
+
+
+# ======================================================================
+# Stock-based strategies: what retail actually trades
+# ======================================================================
+#
+# The three most-taught retail strategies all involve stock, and none of them
+# could be expressed before Leg gained a stock right. They also each carry a
+# characteristic misconception, noted with the generator, because the number a
+# scanner prints for them is usually not the number that matters.
+
+def generate_covered_calls(df, expiry, spot, short_deltas=(0.30, 0.20, 0.16),
+                           min_oi=25):
+    """Long 100 shares against one short call, per delta.
+
+    The misconception: a covered call is sold as "income". It is not free
+    income -- it is the sale of your upside. The position is economically
+    identical to a short cash-secured put at the same strike, and it carries
+    the FULL downside of owning the stock, reduced only by the credit.
+
+    So the honest way to read a covered call's expected value is not against
+    zero, it is against simply holding the shares.
+    """
+    g = df[(df["expiry"] == pd.Timestamp(expiry)) & (df["right"] == "C")
+           & (df["open_interest"] >= min_oi) & (df["bid"] > 0)].copy()
+    if g.empty:
+        return []
+    out = []
+    for d in short_deltas:
+        g["dd"] = (g["delta"].abs() - d).abs()
+        k = float(g.sort_values("dd").iloc[0]["strike"])
+        out.append(Structure(
+            f"covered call {k:g}",
+            [Leg(expiry, "S", 0.0, +1), Leg(expiry, "C", k, -1)],
+            {"spot": spot, "short_delta_target": d, "requires_shares": True,
+             "benchmark": "holding the shares outright"},
+        ))
+    return out
+
+
+def generate_cash_secured_puts(df, expiry, spot, short_deltas=(0.30, 0.20, 0.16),
+                               min_oi=25):
+    """One short put, fully cash-secured.
+
+    Payoff-identical to a covered call at the same strike. The capital
+    requirement is the strike times 100 held aside, which is what makes the
+    return-on-capital look modest and honest rather than spectacular.
+
+    Undefined risk in the practical sense: the loss runs to the strike if the
+    underlying goes to zero. It is bounded, but bounded at a number large
+    enough that sizing must assume assignment.
+    """
+    g = df[(df["expiry"] == pd.Timestamp(expiry)) & (df["right"] == "P")
+           & (df["open_interest"] >= min_oi) & (df["bid"] > 0)].copy()
+    if g.empty:
+        return []
+    out = []
+    for d in short_deltas:
+        g["dd"] = (g["delta"].abs() - d).abs()
+        row = g.sort_values("dd").iloc[0]
+        k = float(row["strike"])
+        out.append(Structure(
+            f"cash-secured put {k:g}",
+            [Leg(expiry, "P", k, -1)],
+            {"spot": spot, "short_delta_target": d,
+             "capital_required": k * MULT,
+             "assignment_price": k - float(row["mid"]),
+             "note": "payoff-identical to a covered call at this strike"},
+        ))
+    return out
+
+
+def generate_pmcc(df, near_expiry, far_expiry, spot, long_delta=0.80,
+                  short_deltas=(0.30, 0.20), min_oi=10):
+    """Poor man's covered call: long deep-ITM LEAPS call, short near-term call.
+
+    A covered call that substitutes a high-delta long call for the shares, at a
+    fraction of the capital. What it does NOT substitute is the behaviour: the
+    long leg has vega and theta that stock does not, so a drop in implied
+    volatility hurts a PMCC while leaving a real covered call untouched.
+
+    The structural trap: if the short strike sits below the long strike plus
+    the debit paid, the position can be assigned into a locked-in loss. The
+    generator refuses those combinations rather than ranking them.
+    """
+    longs = df[(df["expiry"] == pd.Timestamp(far_expiry)) & (df["right"] == "C")
+               & (df["open_interest"] >= min_oi) & (df["bid"] > 0)].copy()
+    shorts = df[(df["expiry"] == pd.Timestamp(near_expiry)) & (df["right"] == "C")
+                & (df["open_interest"] >= min_oi) & (df["bid"] > 0)].copy()
+    if longs.empty or shorts.empty:
+        return []
+
+    longs["dd"] = (longs["delta"].abs() - long_delta).abs()
+    lrow = longs.sort_values("dd").iloc[0]
+    lk, ldebit = float(lrow["strike"]), float(lrow["mid"])
+
+    out = []
+    for d in short_deltas:
+        shorts["dd"] = (shorts["delta"].abs() - d).abs()
+        srow = shorts.sort_values("dd").iloc[0]
+        sk, credit = float(srow["strike"]), float(srow["mid"])
+        # Refuse a structure that can be assigned into a guaranteed loss.
+        if sk < lk + (ldebit - credit):
+            continue
+        out.append(Structure(
+            f"PMCC {lk:g}/{sk:g}",
+            [Leg(far_expiry, "C", lk, +1), Leg(near_expiry, "C", sk, -1)],
+            {"spot": spot, "long_delta": float(lrow["delta"]),
+             "short_delta_target": d, "net_debit": (ldebit - credit) * MULT},
+        ))
+    return out
+
+
+def wheel_state(position: str = "cash") -> dict:
+    """The wheel is a PROCESS, not a structure, and is described as one here.
+
+    Cash -> sell a cash-secured put -> assigned into shares -> sell a covered
+    call -> called away -> back to cash.
+
+    What the popular framing omits: the wheel is a short-volatility strategy
+    that is long the underlying most of the time. It performs well in a rising
+    or flat market and it does not have a mechanism for a sustained decline --
+    you get assigned near the top of the move and then sell calls below your
+    cost basis, which locks the loss in if you follow the rules mechanically.
+
+    Selling a call below your basis to "collect income" converts an unrealised
+    loss into a realised one. That is the decision the wheel actually asks of
+    you, and it is the reason the strategy's advertised win rate and its
+    long-run return differ so much.
+    """
+    states = {
+        "cash": {
+            "action": "sell a cash-secured put at a strike you would genuinely "
+                      "be happy to own",
+            "next": "assigned -> shares, or expires -> repeat",
+            "risk": "you are short a put: the loss runs to the strike",
+        },
+        "shares": {
+            "action": "sell a covered call ABOVE your cost basis",
+            "next": "called away -> cash, or expires -> repeat",
+            "risk": "you hold the full downside of the stock; the premium is a "
+                    "small buffer, not a hedge",
+            "warning": "if the stock is below your basis, selling a call at or "
+                       "under it caps your recovery and realises the loss. "
+                       "Waiting is a position; do not sell the call just to "
+                       "keep the cycle going.",
+        },
+    }
+    return states.get(position, states["cash"])

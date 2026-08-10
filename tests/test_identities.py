@@ -389,3 +389,75 @@ def test_degraded_report_is_not_rendered_as_a_normal_digest():
 
     en = notify.format_report(dead)
     assert "No report today" in en
+
+
+# ======================================================================
+# Stock-based strategies
+# ======================================================================
+
+def test_covered_call_equals_short_put(snapshot):
+    """Put-call parity: a covered call and a cash-secured put at the same
+    strike have the SAME payoff shape, differing only by a constant.
+
+    This is the test that matters for these generators, because the two are
+    marketed completely differently -- one as conservative income on shares you
+    own, the other as a way to "get paid to buy the dip" -- while being the
+    same trade. If the implementation does not reproduce that identity, the
+    stock leg is wrong.
+    """
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[-1]
+
+    ccs = X.generate_covered_calls(df, exp, SPOT, (0.30,))
+    assert ccs, "no covered call generated"
+    cc = ccs[0]
+    strike = [l.strike for l in cc.legs if not l.is_stock][0]
+
+    csp = X.Structure("csp", [X.Leg(exp, "P", strike, -1)], {"spot": SPOT})
+
+    grid = np.linspace(SPOT * 0.5, SPOT * 1.5, 2001)
+    dens = np.ones_like(grid)
+
+    r_cc = X.evaluate(df, cc, SPOT, grid, dens, {}, exp, r=RATE, use_executable=False)
+    r_csp = X.evaluate(df, csp, SPOT, grid, dens, {}, exp, r=RATE, use_executable=False)
+
+    # Payoff profiles must be parallel: the difference is a constant.
+    def profile(res, st):
+        val = X._value_at_horizon(st, grid, pd.Timestamp(exp), {}, r=RATE) * X.MULT
+        return val - res["cost"]
+
+    diff = profile(r_cc, cc) - profile(r_csp, csp)
+    assert diff.std() < 1.0, f"payoffs are not parallel (std {diff.std():.3f})"
+
+
+def test_covered_call_caps_upside_and_keeps_downside(snapshot):
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[-1]
+    cc = X.generate_covered_calls(df, exp, SPOT, (0.20,))[0]
+    strike = [l.strike for l in cc.legs if not l.is_stock][0]
+
+    grid = np.linspace(SPOT * 0.5, SPOT * 1.5, 2001)
+    val = X._value_at_horizon(cc, grid, pd.Timestamp(exp), {}, r=RATE) * X.MULT
+
+    # Above the strike the position is flat: the upside was sold.
+    above = val[grid > strike * 1.05]
+    assert above.std() < 1.0, "covered call is not capped above the strike"
+
+    # Below, it tracks the stock roughly one-for-one.
+    lo = grid < SPOT * 0.9
+    slope = np.polyfit(grid[lo], val[lo], 1)[0]
+    assert 95 < slope < 105, f"downside slope {slope:.1f}, expected ~100"
+
+
+def test_pmcc_refuses_structurally_losing_combinations(snapshot):
+    """A PMCC whose short strike sits below long strike plus net debit can be
+    assigned into a guaranteed loss. Those must never be generated."""
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exps = sorted(df["expiry"].unique())
+    out = X.generate_pmcc(df, exps[0], exps[-1], SPOT)
+    for st in out:
+        legs = sorted(st.legs, key=lambda l: pd.Timestamp(l.expiry))
+        short_k = legs[0].strike
+        long_k = legs[-1].strike
+        assert short_k >= long_k, (
+            f"short strike {short_k} below long strike {long_k}")

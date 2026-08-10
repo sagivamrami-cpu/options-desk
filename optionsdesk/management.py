@@ -57,6 +57,12 @@ class ManagementPlan:
 
 def _family(name: str) -> str:
     n = (name or "").lower()
+    if "covered call" in n:
+        return "covered_call"
+    if "cash-secured" in n or "cash secured" in n:
+        return "csp"
+    if "pmcc" in n:
+        return "pmcc"
     if "condor" in n:
         return "condor"
     if "butterfly" in n:
@@ -159,6 +165,9 @@ def plan_for(candidate: dict, spot: float) -> ManagementPlan:
 # ----------------------------------------------------------------------
 
 FAMILY_HE = {
+    "covered_call": "קול מכוסה",
+    "csp": "פוט מגובה מזומן",
+    "pmcc": "קול מכוסה של עני",
     "vertical": "ספרד אנכי",
     "condor": "איירון קונדור",
     "butterfly": "פרפר",
@@ -179,7 +188,26 @@ def plan_he(candidate: dict, spot: float) -> dict:
     credit = abs(cost) if is_credit else 0.0
     debit = cost if not is_credit else 0.0
 
-    if fam in ("vertical", "condor") and is_credit:
+    if fam == "covered_call":
+        target = "לתת לקול לפקוע, או לקנות בחזרה ב‑80% מהרווח ולגלגל"
+        stop = ("אין סטופ על הקול — הסיכון הוא במניה. להחליט מראש באיזה מחיר "
+                "אתה יוצא מהמניה עצמה")
+        adjust = ("אם המחיר עבר את הסטרייק ואתה רוצה לשמור על המניה — לגלגל "
+                  "קדימה ולמעלה **תמורת קרדיט**. אם לא אכפת לך למכור — תן לזה "
+                  "להיקרא. זו הייתה העסקה מלכתחילה.")
+    elif fam == "csp":
+        target = f"סגירה ב‑50% מהקרדיט (~${credit*0.5:,.0f})"
+        stop = "אם אתה לא באמת רוצה את המניה במחיר הזה — לא הייתה לך עסקה"
+        adjust = ("אם נבחן: לגלגל קדימה ולמטה תמורת קרדיט, או לקבל הקצאה "
+                  "ולעבור לקול מכוסה. **הקצאה היא לא כישלון** — היא החצי השני "
+                  "של האסטרטגיה.")
+    elif fam == "pmcc":
+        target = f"סגירה של הרגל הקצרה ב‑50% מהקרדיט (~${credit*0.5:,.0f})"
+        stop = f"החיוב נטו הוא ההפסד המקסימלי (${abs(debit):,.0f})"
+        adjust = ("שים לב: הרגל הארוכה **לונג וגא** — ירידת תנודתיות פוגעת בך "
+                  "גם אם המחיר עשה בדיוק מה שרצית. זה ההבדל מקול מכוסה אמיתי. "
+                  "אם ה‑IV קורס, לשקול סגירה.")
+    elif fam in ("vertical", "condor") and is_credit:
         target = f"סגירה ב‑50% מהקרדיט (~${credit*0.5:,.0f})"
         stop = f"סגירה בהפסד של פי 2 מהקרדיט (~${credit*2:,.0f})"
         adjust = ("אם הסטרייק הקצר נבחן ונשאר יותר משבוע — לגלגל את כל הספרד "
@@ -214,7 +242,14 @@ def plan_he(candidate: dict, spot: float) -> dict:
                  else "כבר בתוך אזור הגאמה — לנהל בקפידה או להקטין גודל")
 
     warn = None
-    if fam == "undefined":
+    if fam == "covered_call":
+        warn = ("זו לא הכנסה חינם — מכרת את הצד העולה. הסיכון כלפי מטה זהה "
+                "להחזקת המניה, פחות הקרדיט. המדד הנכון הוא מול החזקת המניה, "
+                "לא מול אפס.")
+    elif fam == "csp":
+        warn = ("זהה בתשלום לקול מכוסה באותו סטרייק. ההפסד רץ עד לסטרייק — "
+                "לגדל בהנחה שתקבל הקצאה.")
+    elif fam == "undefined":
         warn = ("סיכון בלתי מוגבל — אין הפסד מקסימלי. לגדל לפי תרחיש קיצון של "
                 "3–4 סטיות תקן, לא לפי דרישת המרווח.")
     elif math.isfinite(dte) and dte <= 7:

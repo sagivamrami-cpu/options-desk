@@ -337,3 +337,55 @@ def test_vrp_sign_change_alerts_once():
     prev2 = dict(prev, vrp=-0.02)
     assert not [a for a in AL.evaluate(_fake_scan(vrp=-0.02), prev2)
                 if a.kind == "vrp_sign_change"]
+
+
+# ======================================================================
+# Data quality
+# ======================================================================
+
+def test_empty_open_interest_marks_the_report_degraded():
+    """Regression, and the costliest bug in this project's history.
+
+    Pre-market the provider returned bid=ask=0 and open_interest=0 for every
+    contract. GEX was computed over zero open interest, came back zero, the
+    flip level and max pain came back nan, and the report was delivered to
+    Telegram with no warning at all. Nothing in the stack noticed the inputs
+    were empty.
+    """
+    import datetime as _dt
+    from optionsdesk.sources.base import ChainSnapshot
+    from .conftest import build_chain, build_history
+
+    chain = build_chain()
+    chain["open_interest"] = 0.0
+    chain["bid"] = 0.0
+    chain["ask"] = 0.0
+
+    snap = ChainSnapshot("TEST", SPOT, chain, _dt.datetime.now(), "synthetic",
+                         build_history())
+    q = snap.quality()
+    assert q["usable_for_positioning"] is False
+    assert q["usable_for_surface"] is False
+    assert any("open interest is zero" in p for p in q["problems"])
+
+
+def test_healthy_chain_is_not_flagged(snapshot):
+    q = snapshot.quality()
+    assert q["usable_for_positioning"] is True
+    assert q["usable_for_surface"] is True
+    assert q["problems"] == []
+
+
+def test_degraded_report_is_not_rendered_as_a_normal_digest():
+    """The formatter must refuse, in both languages, rather than print zeros."""
+    from optionsdesk import notify
+    dead = [{"symbol": "QQQ", "asof": "2026-08-10T08:30:00", "degraded": True,
+             "data_quality": {"problems": ["open interest is zero across the whole chain"]},
+             "gex": {}, "vol": {}, "read": {}, "expiries": []}]
+
+    he = notify.format_report_he(dead)
+    assert "אין דוח היום" in he
+    assert "GEX" not in he.replace("open interest is zero", "")
+
+    en = notify.format_report(dead)
+    assert "No report today" in en

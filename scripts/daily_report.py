@@ -47,6 +47,11 @@ def main() -> int:
     p.add_argument("--expiries", type=int, default=8, help="how many expiries to pull")
     p.add_argument("--rate", type=float, default=0.04, help="risk-free rate")
     p.add_argument("--out", default=str(ROOT / "out"))
+    p.add_argument("--lang", default="he", choices=["he", "en"],
+                   help="language for the Telegram digest (default Hebrew)")
+    p.add_argument("--strategies", action="store_true", default=True,
+                   help="include ranked structures with a management plan")
+    p.add_argument("--no-strategies", dest="strategies", action="store_false")
     p.add_argument("--telegram", action="store_true",
                    help="send the digest to Telegram (scripts/setup_telegram.py)")
     p.add_argument("--no-persist", action="store_true",
@@ -94,10 +99,23 @@ def main() -> int:
     print(_digest(analyses, failures))
     print(f"\nHTML  {html_path}\nJSON  {json_path}")
 
+    strategies = {}
+    if args.strategies and analyses:
+        # The scanner is a second pass over the same chains. It is cheap (a few
+        # seconds) and it is what turns a regime read into something actionable.
+        from optionsdesk.scanner import scan_symbol
+        for a in analyses:
+            try:
+                strategies[a["symbol"]] = scan_symbol(
+                    a["symbol"], source=args.source, dte_range=(0, 45))
+            except Exception as exc:
+                print(f"[{a['symbol']}] structure scan failed: {exc}", file=sys.stderr)
+
     if args.telegram and analyses:
         from optionsdesk import notify
+        sender = notify.send_report_he if args.lang == "he" else notify.send_report
         try:
-            if notify.send_report(analyses):
+            if sender(analyses, None, strategies):
                 print("TG    sent")
             else:
                 print("TG    not configured -- run scripts/setup_telegram.py")

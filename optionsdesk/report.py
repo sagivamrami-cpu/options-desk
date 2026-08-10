@@ -30,6 +30,11 @@ def analyze(symbol: str, source: str = "auto", max_expiries: int = 8,
             rate: float = M.DEFAULT_RATE, div_yield: float = M.DEFAULT_YIELD,
             persist: bool = True) -> dict:
     snap = fetch(symbol, source=source, max_expiries=max_expiries)
+
+    quality = snap.quality()
+    if quality["problems"]:
+        snap.warnings.extend(quality["problems"])
+
     df = M.prepare(snap, r=rate, q=div_yield)
     spot = snap.spot
 
@@ -76,6 +81,10 @@ def analyze(symbol: str, source: str = "auto", max_expiries: int = 8,
         "warnings": snap.warnings,
         "spot": spot,
         "contracts_analyzed": int(len(df)),
+        "data_quality": quality,
+        # A report built on empty inputs must announce itself as such, at the
+        # top level, so no consumer can render it as if it were real.
+        "degraded": not quality["usable_for_positioning"],
         "vol": {
             "iv30": iv30,
             "rv20": rv20,

@@ -128,9 +128,29 @@ def format_report(analyses: list[dict], artifact_url: str | None = None) -> str:
 
     date = str(analyses[0].get("asof", ""))[:10]
     src = analyses[0].get("source", "?")
-    out = [f"<b>📈 Options Desk — {_esc(date)}</b>", f"<i>source: {_esc(src)}</i>", ""]
 
-    for a in analyses:
+    live = [a for a in analyses if not a.get("degraded")]
+    dead = [a for a in analyses if a.get("degraded")]
+    if not live:
+        msg = [f"<b>⚠️ Options Desk — {_esc(date)}</b>", "",
+               "<b>No report today — the data is not usable.</b>", ""]
+        for a in dead:
+            msg.append(f"<b>{_esc(a['symbol'])}</b>")
+            for pr in (a.get("data_quality") or {}).get("problems") or []:
+                msg.append(f"• {_esc(pr)}")
+            msg.append("")
+        msg.append("<i>Open interest is published by OCC before the open. Before "
+                   "that the provider returns zeros and every positioning metric "
+                   "would be meaningless.</i>")
+        return "\n".join(msg)
+
+    out = [f"<b>📈 Options Desk — {_esc(date)}</b>", f"<i>source: {_esc(src)}</i>", ""]
+    if dead:
+        out.append(f"⚠️ <i>data unusable for "
+                   f"{_esc(', '.join(a['symbol'] for a in dead))} — omitted.</i>")
+        out.append("")
+
+    for a in live:
         gex, vol, read = a.get("gex", {}), a.get("vol", {}), a.get("read", {})
         flip = gex.get("flip_level")
         dist = gex.get("spot_vs_flip_pct")
@@ -190,9 +210,55 @@ def format_alerts(alerts: list) -> str:
     return "\n".join(out)
 
 
+def format_strategies_en(strategies: dict, per_symbol: int = 2) -> str:
+    """English mirror of format_strategies_he. Same rule: only structures with
+    genuinely positive expectancy after costs are proposed."""
+    from .management import plan_for
+
+    out = ["━" * 20, "<b>🎯 Structure candidates</b>", ""]
+    any_found = False
+    for sym, scan in strategies.items():
+        c = scan.get("candidates")
+        if c is None or len(c) == 0 or "ev_empirical" not in c:
+            continue
+        good = c[c["ev_empirical"] > 0]
+        if not len(good):
+            continue
+        any_found = True
+        for _, row in good.head(per_symbol).iterrows():
+            p = plan_for(row.to_dict(), scan.get("spot", float("nan")))
+            cost = float(row["cost"])
+            out.append(f"<b>{_esc(sym)} — {_esc(row['name'])}</b>")
+            out.append(f"  expiry {_esc(row['expiry'])} ({_n(row['dte'], 0)}d)")
+            out.append(f"  {'credit' if cost < 0 else 'debit'} ${_n(abs(cost), 0)}"
+                       f" · slippage ${_n(row.get('slippage', 0), 0)}")
+            out.append(f"  max profit ${_n(row['max_profit'], 0)} · "
+                       f"max loss ${_n(abs(row['max_loss']), 0)}")
+            out.append(f"  EV ${_sn(row['ev_empirical'], 2)} · "
+                       f"POP {_n(float(row['pop_empirical'])*100, 0)}%")
+            out.append(f"  target: {_esc(p.target)}")
+            out.append(f"  stop: {_esc(p.stop)}")
+            out.append(f"  time: {_esc(p.time_exit)}")
+            out.append(f"  adjust: {_esc(p.adjustment)}")
+            for note in p.notes:
+                out.append(f"  ⚠️ <i>{_esc(note)}</i>")
+            out.append("")
+
+    if not any_found:
+        out.append("<b>Nothing clears the cost test today.</b>")
+        out.append("<i>That is the most common correct answer in liquid options, "
+                   "not a failure of the scan.</i>")
+        out.append("")
+    return "\n".join(out)
+
+
 def send_report(analyses: list[dict], artifact_url: str | None = None,
+                strategies: dict | None = None,
                 cfg: TelegramConfig | None = None) -> bool:
-    return send(format_report(analyses, artifact_url), cfg)
+    text = format_report(analyses, artifact_url)
+    if strategies:
+        text += "\n\n" + format_strategies_en(strategies)
+    return send(text, cfg)
 
 
 def send_alerts(alerts: list, cfg: TelegramConfig | None = None) -> bool:
@@ -209,3 +275,177 @@ def verify(cfg: TelegramConfig | None = None) -> dict:
     if cfg is None:
         raise RuntimeError("no Telegram config -- run scripts/setup_telegram.py")
     return _post(cfg, "getMe", {}).get("result", {})
+
+
+# ======================================================================
+# Hebrew rendering
+# ======================================================================
+#
+# Telegram renders bidirectional text correctly only if the numeric and Latin
+# runs are isolated. Without isolates a line like "flip 709.65 (+1.85%)" inside
+# a Hebrew sentence reorders on screen and the minus sign can end up attached to
+# the wrong number -- which in a trading message is not cosmetic.
+
+RLM = "‏"          # right-to-left mark: pins a line as RTL
+LRI, PDI = "⁦", "⁩"   # isolate a left-to-right run inside RTL text
+
+
+def _lt(s) -> str:
+    """Isolate a Latin/numeric run so bidi cannot reorder it."""
+    return f"{LRI}{s}{PDI}"
+
+
+REGIME_HE = {
+    "Pinned / vol-suppressed": "מרותק — תנודתיות מדוכאת",
+    "Pinned but underpriced": "מרותק אך מתומחר בחסר",
+    "Stressed / trend-amplifying": "לחוץ — מגביר מגמה",
+    "Unstable": "לא יציב",
+    "Mixed": "מעורב",
+}
+
+
+def format_report_he(analyses: list[dict], artifact_url: str | None = None,
+                     strategies: dict | None = None) -> str:
+    """The daily digest in Hebrew, with concrete structures and a plan."""
+    if not analyses:
+        return f"{RLM}<b>שולחן האופציות</b>\nלא התקבל דוח לאף נכס."
+
+    date = str(analyses[0].get("asof", ""))[:10]
+
+    # Refuse to render a positioning report over empty inputs. Every headline
+    # number here -- GEX, the flip, max pain, the walls -- comes from open
+    # interest, so with none of it the report is not "approximate", it is
+    # fiction with a timestamp. Say that instead.
+    live = [a for a in analyses if not a.get("degraded")]
+    dead = [a for a in analyses if a.get("degraded")]
+
+    if not live:
+        msg = [f"{RLM}<b>⚠️ שולחן האופציות — {_lt(date)}</b>", "",
+               f"{RLM}<b>אין דוח היום — הנתונים אינם תקינים.</b>", ""]
+        for a in dead:
+            probs = (a.get("data_quality") or {}).get("problems") or []
+            msg.append(f"{RLM}<b>{_lt(_esc(a['symbol']))}</b>")
+            for pr in probs:
+                msg.append(f"{RLM}• {_esc(pr)}")
+            msg.append("")
+        msg.append(f"{RLM}<i>ריבית פתוחה מתפרסמת ע\"י OCC לפני הפתיחה. לפני כן "
+                   f"הספק מחזיר אפסים, וכל מדדי המיצוב היו יוצאים חסרי משמעות. "
+                   f"עדיף לא לשלוח דוח מאשר לשלוח דוח שגוי.</i>")
+        return "\n".join(msg)
+
+    out = [f"{RLM}<b>📈 שולחן האופציות — {_lt(date)}</b>", ""]
+    if dead:
+        out.append(f"{RLM}⚠️ <i>נתונים חסרים עבור "
+                   f"{_lt(', '.join(a['symbol'] for a in dead))} — הושמט.</i>")
+        out.append("")
+
+    for a in live:
+        gex, vol, read = a.get("gex", {}), a.get("vol", {}), a.get("read", {})
+        flip, dist = gex.get("flip_level"), gex.get("spot_vs_flip_pct")
+        vrp = (vol.get("vrp") or {}).get("vrp")
+
+        out.append(f"{RLM}<b>{_lt(_esc(a['symbol']))}  {_lt(_n(a.get('spot')))}</b>")
+        out.append(f"{RLM}{_esc(REGIME_HE.get(read.get('regime'), read.get('regime', '?')))}")
+
+        long_g = gex.get("regime") == "long_gamma"
+        out.append(f"{RLM}גאמה: {'לונג' if long_g else '<b>שורט</b>'} · "
+                   f"נטו {_lt('$' + _n(gex.get('total'), 0))} לכל 1%")
+
+        if flip is not None and math.isfinite(float(flip or float("nan"))):
+            near = abs(float(dist)) < 1.0 if dist is not None else False
+            out.append(f"{RLM}רמת היפוך: {_lt(_n(flip))} "
+                       f"({_lt(_sn(dist) + '%')}){'  ⚠️ קרוב' if near else ''}")
+
+        iv30, rv20 = vol.get("iv30"), vol.get("rv20")
+        if iv30 and rv20:
+            warn = "  ⚠️" if (vrp is not None and vrp < 0) else ""
+            out.append(f"{RLM}תנודתיות: גלומה {_lt(_n(float(iv30)*100, 1) + '%')} מול "
+                       f"ממומשת {_lt(_n(float(rv20)*100, 1) + '%')} · "
+                       f"פרמיה {_lt(_sn((vrp or 0)*100, 1))}{warn}")
+            if vrp is not None and vrp < 0:
+                out.append(f"{RLM}<i>הממומשת גבוהה מהגלומה — לא משלמים לך למכור פרמיה.</i>")
+
+        exps = a.get("expiries") or []
+        if exps:
+            e = exps[0]
+            em = (e.get("expected_move") or {}).get("sigma_pct")
+            out.append(f"{RLM}פקיעה {_lt(_esc(e['expiry']))} "
+                       f"({_lt(_n(e.get('dte'), 0))} ימים): "
+                       f"כאב מקסימלי {_lt(_n(e.get('max_pain'), 1))} "
+                       f"({_lt(_sn(e.get('max_pain_dist_pct'), 1) + '%')}) · "
+                       f"תנועה צפויה {_lt('±' + _n(em, 2) + '%')}")
+        out.append("")
+
+    if strategies:
+        out.append(format_strategies_he(strategies))
+
+    if artifact_url:
+        out.append(f'{RLM}<a href="{_esc(artifact_url)}">הדוח המלא ←</a>')
+    out.append(f"{RLM}<i>קריאת מיצוב, לא תחזית. אין באמור ייעוץ השקעות.</i>")
+    return "\n".join(out)
+
+
+def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
+    """Concrete structures with strikes, cost, P&L and a management plan.
+
+    Only structures with genuinely POSITIVE expectancy after costs are
+    proposed. A positive `edge` alone means a structure is priced better than
+    the market's own measure implies -- it does not mean the trade makes money,
+    and presenting one as a suggestion would be exactly the confusion this
+    project exists to avoid.
+    """
+    from .management import plan_he
+
+    out = [f"{RLM}━━━━━━━━━━━━━━━━━━━━", f"{RLM}<b>🎯 הצעות מבנה</b>", ""]
+    any_found = False
+
+    for sym, scan in strategies.items():
+        c = scan.get("candidates")
+        if c is None or len(c) == 0 or "ev_empirical" not in c:
+            continue
+        good = c[c["ev_empirical"] > 0]
+        if not len(good):
+            continue
+        any_found = True
+        spot = scan.get("spot", float("nan"))
+
+        for _, row in good.head(per_symbol).iterrows():
+            p = plan_he(row.to_dict(), spot)
+            cost = float(row["cost"])
+            is_credit = cost < 0
+
+            out.append(f"{RLM}<b>{_lt(_esc(sym))} · {_esc(p['family_he'])}</b>")
+            out.append(f"{RLM}{_lt(_esc(row['name']))}")
+            out.append(f"{RLM}פקיעה: {_lt(_esc(row['expiry']))} "
+                       f"({_lt(_n(row['dte'], 0))} ימים)")
+            out.append(f"{RLM}{'קרדיט' if is_credit else 'חיוב'}: "
+                       f"{_lt('$' + _n(abs(cost), 0))}"
+                       f"  ·  עלות מרווח {_lt('$' + _n(row.get('slippage', 0), 0))}")
+            out.append(f"{RLM}רווח מקסימלי: {_lt('$' + _n(row['max_profit'], 0))}"
+                       f"  ·  הפסד מקסימלי: {_lt('$' + _n(abs(row['max_loss']), 0))}")
+            out.append(f"{RLM}תוחלת: {_lt('$' + _sn(row['ev_empirical'], 2))}"
+                       f"  ·  סיכוי לרווח: {_lt(_n(float(row['pop_empirical'])*100, 0) + '%')}")
+
+            out.append(f"{RLM}<b>ניהול:</b>")
+            out.append(f"{RLM}• יעד: {_esc(p['target'])}")
+            out.append(f"{RLM}• עצירה: {_esc(p['stop'])}")
+            out.append(f"{RLM}• זמן: {_esc(p['time_exit'])}")
+            out.append(f"{RLM}• תיקון: {_esc(p['adjust'])}")
+            if p["warn"]:
+                out.append(f"{RLM}⚠️ <i>{_esc(p['warn'])}</i>")
+            out.append("")
+
+    if not any_found:
+        out.append(f"{RLM}<b>אין מבנה שעובר את מבחן העלויות היום.</b>")
+        out.append(f"{RLM}<i>זו התשובה הנפוצה ביותר באופציות נזילות, ולא כישלון "
+                   f"של הסריקה. מבנה שנראה טוב לפני המרווח ומפסיד אחריו הוא "
+                   f"עסקה גרועה.</i>")
+        out.append("")
+
+    return "\n".join(out)
+
+
+def send_report_he(analyses: list[dict], artifact_url: str | None = None,
+                   strategies: dict | None = None,
+                   cfg: TelegramConfig | None = None) -> bool:
+    return send(format_report_he(analyses, artifact_url, strategies), cfg)

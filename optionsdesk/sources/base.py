@@ -50,6 +50,51 @@ class ChainSnapshot:
     def for_expiry(self, expiry) -> pd.DataFrame:
         return self.chain[self.chain["expiry"] == pd.Timestamp(expiry)]
 
+    def quality(self) -> dict:
+        """Is this data actually usable, and for what?
+
+        Exists because of a real incident: pre-market, Yahoo returned
+        bid=ask=0 and open_interest=0 for every contract. The pipeline
+        computed GEX over zero open interest, got zero, produced a report with
+        a nan flip level and a nan max pain, and delivered it without a word.
+        Nothing in the stack noticed that the inputs were empty.
+
+        Positioning metrics (GEX, the flip level, max pain, OI walls) are
+        built ENTIRELY from open interest. With no open interest they are not
+        approximate -- they are meaningless, and must not be shown.
+        """
+        df = self.chain
+        n = len(df)
+        if n == 0:
+            return {"usable_for_positioning": False, "usable_for_surface": False,
+                    "total_open_interest": 0.0, "two_sided_fraction": 0.0,
+                    "problems": ["chain is empty"]}
+
+        total_oi = float(df["open_interest"].fillna(0).sum())
+        two_sided = float(((df["bid"] > 0) & (df["ask"] > 0)).mean())
+        priced = float((df["mid"] > 0).mean())
+
+        problems = []
+        if total_oi <= 0:
+            problems.append(
+                "open interest is zero across the whole chain -- GEX, the gamma "
+                "flip, max pain and OI walls cannot be computed")
+        if two_sided < 0.05:
+            problems.append(
+                f"only {two_sided:.0%} of contracts have a two-sided market -- "
+                "the volatility surface cannot be fitted from mids alone")
+        if priced < 0.5:
+            problems.append(f"only {priced:.0%} of contracts carry a usable price")
+
+        return {
+            "usable_for_positioning": total_oi > 0,
+            "usable_for_surface": two_sided >= 0.05,
+            "total_open_interest": total_oi,
+            "two_sided_fraction": two_sided,
+            "priced_fraction": priced,
+            "problems": problems,
+        }
+
     def summary(self) -> str:
         exps = self.expiries()
         return (

@@ -58,7 +58,7 @@ def main() -> int:
         return 1
 
     from optionsdesk import notify
-    text = notify.format_eod_digest_he(desk_status, today)
+    text = notify.format_eod_digest_he(desk_status, today, ledger=ledger)
     print(text)
 
     if args.telegram:

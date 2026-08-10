@@ -753,3 +753,86 @@ def test_scanner_includes_all_new_families(snapshot):
     joined = " ".join(names.tolist())
     for needle in ("protective put", "iron butterfly", "straddle"):
         assert needle in joined, f"'{needle}' never appeared in scanner output"
+
+
+def _recorded_position(snapshot, tmp_path, dte_offset_days: int):
+    """Helper: record one vertical and sweep it to expiry, returning the
+    closed Position -- shared setup for the exit_spot and postmortem tests."""
+    from optionsdesk.ledger import Ledger
+
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[0]
+    cand = X.generate_verticals(df, exp, SPOT, "P", (0.16,), (2,))[0]
+    legs = [{"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
+             "strike": l.strike, "qty": l.qty} for l in cand.legs]
+    px = X.price_structure(df, cand)
+    row = {"name": cand.name, "expiry": str(pd.Timestamp(exp).date()),
+           "cost": px["executable_cost"], "max_profit": 100.0, "max_loss": -100.0,
+           "dte": 1, "pop_empirical": 0.7, "_legs": legs}
+
+    ledger = Ledger(tmp_path / "ledger.json")
+    ledger.record("TEST", "daily", row, SPOT)
+    ledger.sweep_expired({"TEST": df}, {"TEST": SPOT * 1.01},
+                         today=pd.Timestamp(exp).date() + pd.Timedelta(days=dte_offset_days))
+    return ledger, ledger.closed_positions("TEST")[0]
+
+
+def test_ledger_close_records_exit_spot(snapshot, tmp_path):
+    """A closed position must remember the spot it closed at -- otherwise no
+    later post-mortem can say how far price actually moved."""
+    _, pos = _recorded_position(snapshot, tmp_path, dte_offset_days=1)
+    assert pos.exit_spot == pytest.approx(SPOT * 1.01)
+
+
+def test_postmortem_explain_close_mentions_outcome_and_lesson(snapshot, tmp_path):
+    """explain_close must ground itself in the position's own recorded
+    fields (pnl, spot move, days held) and always include the forward-looking
+    entry-check text, since that IS the 'what to improve' the user asked
+    for -- restated, not invented fresh per trade. Returns plain data (not
+    rendered Hebrew) -- see the module docstring for why."""
+    from optionsdesk import postmortem as PM
+
+    _, pos = _recorded_position(snapshot, tmp_path, dte_offset_days=1)
+    e = PM.explain_close(pos)
+
+    assert e["final_pnl"] == pytest.approx(pos.final_pnl)
+    assert e["symbol"] == pos.symbol
+    assert e["entry_check"], "entry_check (the 'improve next time' lesson) must never be empty"
+    assert e["needs"], "needs (the success condition) must never be empty"
+    assert e["move_pct"] == pytest.approx(1.0, abs=0.01)  # SPOT*1.01 exit vs SPOT entry
+    # opened_at/closed_at are both real wall-clock timestamps set within this
+    # same test run -- dte_offset_days only affects the expiry check, not
+    # these -- so days_held is legitimately 0, not the offset.
+    assert e["days_held"] == 0
+
+
+def test_postmortem_pattern_stats_respects_min_n(snapshot, tmp_path):
+    """A (symbol, family) combination with fewer than min_n closes must not
+    be reported as a pattern -- one bad trade is not a pattern, and claiming
+    otherwise is exactly the kind of unearned precision this project's own
+    edge-detection logic refuses to produce elsewhere."""
+    from optionsdesk import postmortem as PM
+    from optionsdesk.ledger import Ledger
+
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[0]
+    cand = X.generate_verticals(df, exp, SPOT, "P", (0.16,), (2,))[0]
+    legs = [{"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
+             "strike": l.strike, "qty": l.qty} for l in cand.legs]
+    px = X.price_structure(df, cand)
+    row = {"name": cand.name, "expiry": str(pd.Timestamp(exp).date()),
+           "cost": px["executable_cost"], "max_profit": 100.0, "max_loss": -100.0,
+           "dte": 1, "pop_empirical": 0.7, "_legs": legs}
+
+    ledger = Ledger(tmp_path / "ledger.json")
+    for _ in range(2):
+        ledger.record("TEST", "daily", row, SPOT)
+        ledger.sweep_expired({"TEST": df}, {"TEST": SPOT},
+                             today=pd.Timestamp(exp).date() + pd.Timedelta(days=1))
+
+    stats = PM.pattern_stats(ledger, min_n=3)
+    assert stats == [], "a 2-trade group must not be reported at min_n=3"
+
+    stats_lenient = PM.pattern_stats(ledger, min_n=2)
+    assert len(stats_lenient) == 1
+    assert stats_lenient[0]["n"] == 2

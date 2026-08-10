@@ -69,6 +69,7 @@ class Position:
     closed_at: str | None = None
     close_reason: str | None = None
     final_pnl: float | None = None
+    exit_spot: float | None = None
     meta: dict = field(default_factory=dict)
 
     def to_structure(self) -> X.Structure:
@@ -114,6 +115,12 @@ class Ledger:
             out = [p for p in out if p.symbol == symbol]
         if bucket:
             out = [p for p in out if p.bucket == bucket]
+        return out
+
+    def closed_positions(self, symbol: str | None = None) -> list[Position]:
+        out = [p for p in self._positions.values() if p.status == "closed"]
+        if symbol:
+            out = [p for p in out if p.symbol == symbol]
         return out
 
     def record(self, symbol: str, bucket: str, candidate_row: dict,
@@ -216,11 +223,13 @@ class Ledger:
             "strike_crossings": crossings,
         }
 
-    def close(self, pos: Position, reason: str, final_pnl: float):
+    def close(self, pos: Position, reason: str, final_pnl: float,
+             exit_spot: float | None = None):
         pos.status = "closed"
         pos.closed_at = _dt.datetime.now().isoformat(timespec="seconds")
         pos.close_reason = reason
         pos.final_pnl = final_pnl
+        pos.exit_spot = exit_spot
         self._save()
 
     def sweep_expired(self, df_by_symbol: dict, spot_by_symbol: dict,
@@ -238,10 +247,10 @@ class Ledger:
             mark = self.mark_to_market(pos, df, spot, today)
             out.append(mark)
             if mark["hit_target"]:
-                self.close(pos, "target", mark["pnl"])
+                self.close(pos, "target", mark["pnl"], exit_spot=spot)
             elif mark["hit_stop"]:
-                self.close(pos, "stop", mark["pnl"])
+                self.close(pos, "stop", mark["pnl"], exit_spot=spot)
             elif mark["expired"]:
-                self.close(pos, "expired", mark["pnl"])
+                self.close(pos, "expired", mark["pnl"], exit_spot=spot)
         self._save()          # persist strike_side / meta updates on still-open positions
         return out

@@ -628,7 +628,7 @@ def format_desk_status_he(status_by_symbol: dict) -> str:
     return "\n".join(out)
 
 
-def format_eod_digest_he(status_by_symbol: dict, today) -> str:
+def format_eod_digest_he(status_by_symbol: dict, today, ledger=None) -> str:
     """End-of-day scorecard: every tracked position marked to the closing
     price, plus anything that closed today, with a green/red tally up front.
 
@@ -638,8 +638,14 @@ def format_eod_digest_he(status_by_symbol: dict, today) -> str:
     accumulates into a track record over enough days rather than living only
     in the moment each alert fired. Meant to be sent once, near the close --
     not from watch.py's every-ten-minutes pass.
+
+    Pass `ledger` to also get a per-trade "why" for everything that closed
+    today (postmortem.explain_close_he) and a recurring-pattern section
+    across every close on record (postmortem.format_patterns_he) -- omit it
+    for a bare scorecard with no ledger dependency.
     """
     from .management import FAMILY_HE, _family
+    from . import postmortem as PM
 
     date_str = today.strftime("%d/%m/%Y") if hasattr(today, "strftime") else str(today)
     today_str = today.isoformat() if hasattr(today, "isoformat") else str(today)
@@ -660,7 +666,8 @@ def format_eod_digest_he(status_by_symbol: dict, today) -> str:
                 rows.append({"sym": sym, "label": label, "name": p.name,
                             "pnl": closed["pnl"], "cost": p.entry_cost,
                             "opened_today": p.opened_at[:10] == today_str,
-                            "closed_today": True, "close_reason": p.close_reason})
+                            "closed_today": True, "close_reason": p.close_reason,
+                            "position": p})
 
             if info["status"] == "existing":
                 m = info["mark"]
@@ -692,29 +699,82 @@ def format_eod_digest_he(status_by_symbol: dict, today) -> str:
     out.append(tally + "</b>")
     out.append("")
 
+    closed_today_lines, open_lines = [], []
     for r in rows:
-        icon = "🟢" if r["pnl"] > 0 else ("🔴" if r["pnl"] < 0 else "⚪")
-        fam_he = FAMILY_HE.get(_family(r["name"]), "מבנה")
-        out.append(f"{RLM}{icon} <b>{_lt(_esc(r['sym']))} · {r['label']}</b> "
-                   f"— {_esc(fam_he)} ({_lt(_esc(r['name']))})")
-
-        if r.get("just_recorded"):
-            out.append(f"{RLM}   נרשם עכשיו לראשונה — אין עדיין נתון P&L, "
-                       f"עלות כניסה {_lt('$' + _n(abs(r['cost']), 0))}")
+        if r["closed_today"]:
+            # The fuller postmortem -- what happened, whether the structure's
+            # own condition for success was met, and the lesson restated --
+            # rather than the same one-liner an open position gets, since
+            # this is exactly the "what lost/gained and why" the digest
+            # exists to answer.
+            e = PM.explain_close(r["position"])
+            icon = "🟢" if e["final_pnl"] > 0 else ("🔴" if e["final_pnl"] < 0 else "⚪")
+            days_txt = f" אחרי {_lt(_n(e['days_held'], 0))} ימים" if e["days_held"] is not None else ""
+            move_txt = ""
+            if e["move_pct"] is not None:
+                move_txt = (f" · ספוט {_lt('$' + _n(e['entry_spot'], 2))} ← "
+                           f"{_lt('$' + _n(e['exit_spot'], 2))} "
+                           f"({_lt(_sn(e['move_pct'], 1) + '%')})")
+            pm_lines = [
+                f"{RLM}{icon} <b>{_lt(_esc(e['symbol']))} · {_esc(e['fam_he'])}</b> "
+                f"({_lt(_esc(e['name']))})",
+                f"{RLM}   {_esc(e['reason_he'])}{days_txt}{move_txt}",
+                f"{RLM}   P&L סופי: {_lt('$' + _sn(e['final_pnl'], 0))}"
+                f"  (עלות כניסה {_lt('$' + _n(abs(e['entry_cost']), 0))})",
+                f"{RLM}   התנאי להצלחה: {_esc(e['needs'])}",
+                f"{RLM}   לשיפור בפעם הבאה: {_esc(e['entry_check'])}",
+            ]
+            closed_today_lines.append("\n".join(pm_lines))
             continue
 
-        when = "נכנס היום" if r["opened_today"] else "פתוח מיום קודם"
-        if r["closed_today"]:
-            reason_he = {"target": "נסגר היום ביעד ✅", "stop": "נסגר היום בעצירה ⛔",
-                        "expired": "פקע היום"}.get(r["close_reason"], "נסגר היום")
-            when = reason_he
-        out.append(f"{RLM}   {when}  ·  עלות כניסה {_lt('$' + _n(abs(r['cost']), 0))}"
-                   f"  ·  P&L {'סופי' if r['closed_today'] else 'כרגע'} "
-                   f"{_lt('$' + _sn(r['pnl'], 0))}")
+        icon = "🟢" if r["pnl"] > 0 else ("🔴" if r["pnl"] < 0 else "⚪")
+        fam_he = FAMILY_HE.get(_family(r["name"]), "מבנה")
+        line = [f"{RLM}{icon} <b>{_lt(_esc(r['sym']))} · {r['label']}</b> "
+               f"— {_esc(fam_he)} ({_lt(_esc(r['name']))})"]
+        if r.get("just_recorded"):
+            line.append(f"{RLM}   נרשם עכשיו לראשונה — אין עדיין נתון P&L, "
+                        f"עלות כניסה {_lt('$' + _n(abs(r['cost']), 0))}")
+        else:
+            when = "נכנס היום" if r["opened_today"] else "פתוח מיום קודם"
+            line.append(f"{RLM}   {when}  ·  עלות כניסה {_lt('$' + _n(abs(r['cost']), 0))}"
+                        f"  ·  P&L כרגע {_lt('$' + _sn(r['pnl'], 0))}")
+        open_lines.append("\n".join(line))
+
+    if closed_today_lines:
+        out.append(f"{RLM}<b>🔍 מה נסגר היום, ולמה:</b>")
+        out.append("")
+        for line in closed_today_lines:
+            out.append(line)
+            out.append("")
+
+    out.extend(open_lines)
 
     if empty_lines:
         out.append("")
         out.extend(empty_lines)
+
+    if ledger is not None:
+        out.append("")
+        out.append(f"{RLM}<b>📈 דפוסים חוזרים (כל ההיסטוריה):</b>")
+        n_closed = len(ledger.closed_positions())
+        min_n = 3
+        stats = PM.pattern_stats(ledger, min_n=min_n)
+        if n_closed == 0:
+            out.append(f"{RLM}עדיין אין עסקאות סגורות — אין עדיין על מה לזהות דפוסים.")
+        elif not stats:
+            out.append(f"{RLM}{_lt(_n(n_closed, 0))} עסקאות סגורות עד כה, אבל אף צירוף "
+                       f"נכס/אסטרטגיה עדיין לא הגיע ל-{min_n} עסקאות — מוקדם מדי לדפוס "
+                       f"אמיתי. ממשיכים לצבור.")
+        else:
+            for r in stats:
+                fam_he = FAMILY_HE.get(r["family"], "מבנה")
+                icon = ("🔴" if r["win_rate"] < 0.4
+                        else "🟢" if r["win_rate"] >= 0.6 else "⚪")
+                out.append(f"{RLM}{icon} {_lt(_esc(r['symbol']))} · {_esc(fam_he)}  —  "
+                           f"{_lt(_n(r['win_rate']*100, 0) + '%')} הצלחה מתוך "
+                           f"{_lt(_n(r['n'], 0))} עסקאות  ·  "
+                           f"P&L ממוצע {_lt('$' + _sn(r['avg_pnl'], 0))}  ·  "
+                           f"סה\"כ {_lt('$' + _sn(r['total_pnl'], 0))}")
 
     return "\n".join(out)
 

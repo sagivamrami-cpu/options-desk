@@ -12,14 +12,17 @@ import socket
 
 from .base import CHAIN_COLUMNS, ChainSnapshot, ChainSource
 from .ibkr import DEFAULT_PORTS, IBKRSource
+from .marketdata import MarketDataSource, load_token
 from .yahoo import YahooSource
 
 __all__ = [
     "CHAIN_COLUMNS", "ChainSnapshot", "ChainSource", "DEFAULT_PORTS",
-    "IBKRSource", "YahooSource", "get_source", "fetch", "gateway_is_up",
+    "IBKRSource", "YahooSource", "MarketDataSource",
+    "get_source", "fetch", "gateway_is_up",
 ]
 
-_SOURCES = {"ibkr": IBKRSource, "yahoo": YahooSource}
+_SOURCES = {"ibkr": IBKRSource, "yahoo": YahooSource,
+            "marketdata": MarketDataSource}
 
 
 def get_source(name: str) -> ChainSource:
@@ -56,15 +59,36 @@ def gateway_is_up(host: str = "127.0.0.1", ports=None, timeout: float = 0.25) ->
 def fetch(symbol: str, source: str = "auto", max_expiries: int = 8) -> ChainSnapshot:
     """Pull one snapshot.
 
-    source='auto'  use IBKR only if a Gateway is actually listening, else Yahoo
-    source='ibkr'  fail loudly if TWS/Gateway is unreachable
-    source='yahoo' skip IBKR entirely
+    source='auto'        IBKR if a Gateway is listening, else marketdata.app
+                         if a token exists, else Yahoo
+    source='ibkr'        fail loudly if TWS/Gateway is unreachable
+    source='marketdata'  fail loudly if the token is missing or the call fails
+    source='yahoo'       Yahoo only
     """
     source = (source or "auto").lower()
 
+    # Explicit sources must be honoured exactly. An earlier version fell
+    # through to Yahoo for anything that was not 'ibkr' or 'auto', so asking
+    # for marketdata silently returned Yahoo data labelled as a cross-check --
+    # which would have made the two feeds agree by construction and defeated
+    # the entire point of having a second one.
+    if source == "marketdata":
+        return MarketDataSource().fetch(symbol, max_expiries=max_expiries)
+    if source == "yahoo":
+        return YahooSource().fetch(symbol, max_expiries=max_expiries)
+
     if source == "auto" and not gateway_is_up():
-        # No broker connection configured yet -- this is a normal state, not a
-        # degraded one, so it does not warrant a warning on every report.
+        # No broker connection configured -- a normal state, not a degraded one.
+        # Prefer marketdata.app when a token exists: it is plain REST (so it
+        # works from a cloud run) and it carries real open interest, which
+        # Yahoo silently zeroes before the open.
+        if load_token():
+            try:
+                return MarketDataSource().fetch(symbol, max_expiries=max_expiries)
+            except Exception as exc:
+                snap = YahooSource().fetch(symbol, max_expiries=max_expiries)
+                snap.warnings.insert(0, f"marketdata unavailable ({_short(exc)}); used Yahoo")
+                return snap
         return YahooSource().fetch(symbol, max_expiries=max_expiries)
 
     if source in ("ibkr", "auto"):

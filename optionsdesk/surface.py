@@ -156,12 +156,28 @@ def implied_forward(grp: pd.DataFrame, spot: float, T: float, r: float = 0.04,
     fwds = use.index.to_numpy() + np.exp(r * T) * (use["C"].to_numpy() - use["P"].to_numpy())
     F = float(np.median(fwds))
 
-    if not np.isfinite(F) or F <= 0 or abs(F / spot - 1.0) > 0.2:
-        return forward(spot, T, r, 0.0), 0.0
+    # Sanity-bound the forward itself. Over a few days it cannot be far from
+    # spot; a large deviation means a bad quote pair, not an exotic carry.
+    max_dev = max(0.005, 3.0 * (abs(r) + 0.12) * T)
+    if not np.isfinite(F) or F <= 0 or abs(F / spot - 1.0) > max_dev:
+        return forward(spot, T, r, 0.0), float("nan")
 
     # F = S e^{(r-q)T}  =>  q = r - ln(F/S)/T
-    carry = float(r - np.log(F / spot) / T) if T > 0 else 0.0
-    return F, carry
+    #
+    # The forward is robust at any maturity, but this DERIVED carry is not:
+    # dividing by T means a couple of cents of quoting noise becomes tens of
+    # percent on a one-day option. Measured on live QQQ the same chain implied
+    # 46.9% carry at 0.3 DTE, 14.1% at 1 DTE and 2.3% at 7 DTE -- the number
+    # was converging to something sane, and the short-dated readings were pure
+    # division artefact.
+    #
+    # So the forward is still used (it is correct), but the carry is only
+    # reported where it means something. Reporting 46% would either be
+    # believed, which is worse, or discredit every other number beside it.
+    if T < 7 / 365.0:
+        return F, float("nan")
+    carry = float(r - np.log(F / spot) / T)
+    return F, carry if abs(carry) < 0.25 else float("nan")
 
 
 def fit_svi(strikes, ivs, spot, T, r=0.04, q=0.0, weights=None,
@@ -291,7 +307,12 @@ def fit_all_expiries(df: pd.DataFrame, spot: float, r: float = 0.04,
     for exp, grp in df.groupby("expiry"):
         T = float(grp["T"].iloc[0])
         # Imply the forward from parity rather than trusting an assumed yield.
+        # `carry` is the REPORTED value and may be nan at short maturities where
+        # dividing by T makes it meaningless. Pricing must not use it: the
+        # forward itself is sound, so derive the effective yield back out of F
+        # so the IV solve stays exactly consistent with the moneyness axis.
         F, carry = implied_forward(grp, spot, T, r)
+        q_eff = float(r - np.log(F / spot) / T) if T > 0 else 0.0
         g = otm_smile(grp, F, max_k=max_k)
 
         if len(g) < min_quotes:
@@ -304,14 +325,14 @@ def fit_all_expiries(df: pd.DataFrame, spot: float, r: float = 0.04,
         # leaves a systematic put-versus-call bias in the fitted smile.
         g = g.assign(iv=bs.implied_vol_chain(
             g["mid"].to_numpy(), spot, g["strike"].to_numpy(),
-            g["T"].to_numpy(), r, carry, g["right"].to_numpy(),
+            g["T"].to_numpy(), r, q_eff, g["right"].to_numpy(),
         ))
         g = g[g["iv"].notna() & (g["iv"] > 0.01) & (g["iv"] < 3.0)]
         if len(g) < min_quotes:
             rejected[pd.Timestamp(exp)] = f"only {len(g)} quotes survived IV re-solve"
             continue
 
-        p = fit_svi(g["strike"], g["iv"], spot, T, r, carry, F=F)
+        p = fit_svi(g["strike"], g["iv"], spot, T, r, q_eff, F=F)
         if p is None:
             rejected[pd.Timestamp(exp)] = "SVI fit did not converge"
             continue

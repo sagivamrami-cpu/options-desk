@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from . import metrics as M
-from .sources import fetch
+from .sources import ChainSnapshot, fetch
 
 HISTORY_DIR = Path(__file__).resolve().parent.parent / "data" / "history"
 
@@ -28,8 +28,15 @@ MIN_IV_HISTORY = 20
 # ======================================================================
 def analyze(symbol: str, source: str = "auto", max_expiries: int = 8,
             rate: float = M.DEFAULT_RATE, div_yield: float = M.DEFAULT_YIELD,
-            persist: bool = True) -> dict:
-    snap = fetch(symbol, source=source, max_expiries=max_expiries)
+            persist: bool = True, snap: ChainSnapshot | None = None) -> dict:
+    """Pass a pre-fetched `snap` when the caller already pulled one.
+
+    Metered sources (marketdata.app) charge roughly a credit per contract
+    returned. daily_report.py used to call this AND scanner.scan_symbol()
+    independently, each fetching its own full chain -- silently doubling the
+    cost of every scheduled run. Sharing one snapshot between them halves it.
+    """
+    snap = snap or fetch(symbol, source=source, max_expiries=max_expiries)
 
     quality = snap.quality()
     if quality["problems"]:

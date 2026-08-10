@@ -5,12 +5,32 @@
     python scripts/watch.py --market-hours-only   # no-op outside RTH
     python scripts/watch.py --notify              # macOS notification on alerts
     python scripts/watch.py --quiet               # print only when something fires
+    python scripts/watch.py --no-positions        # regime alerts only, skip the ledger
 
 Each pass appends a row to `data/live/intraday-YYYY-MM-DD.csv` and, when a rule
 fires, writes `data/live/alerts-YYYY-MM-DD.jsonl`. The design point is that
 nothing wakes a human or a language model unless the state actually changed --
-see optionsdesk/alerts.py for why every rule keys off a crossing rather than a
-level.
+see optionsdesk/alerts.py and optionsdesk/deskrun.py for why every rule keys
+off a crossing rather than a level.
+
+COST NOTE FOR METERED SOURCES (marketdata.app)
+------------------------------------------------
+An options chain costs roughly one credit per contract returned, not one per
+request. Building this project's daily/weekly tracking spent the entire
+10,000-credit free-tier day just from development testing. Two defaults here
+exist specifically to keep a SCHEDULED run affordable:
+
+  * --dte defaults to [0, 9], not [0, 45]. The daily and weekly buckets never
+    need anything past this week's Friday; a wide 45-day scan every ten
+    minutes is paying for information this script never uses.
+  * --expiries defaults to 4, capping how many of those near dates get pulled.
+
+Even tightened, running this every 10 minutes on marketdata.app all session
+is still tens of thousands of credits a day -- outside the free tier. Point
+--source at yahoo for frequent polling (free, and open interest does not
+change intraday, so its only real weakness -- pre-market zeros -- does not
+apply once the session is running) and reserve marketdata for the once-a-day
+full report, or lengthen --interval, or upgrade the plan.
 """
 
 from __future__ import annotations
@@ -30,6 +50,8 @@ sys.path.insert(0, str(ROOT))
 import pandas as pd  # noqa: E402
 
 from optionsdesk import alerts as A  # noqa: E402
+from optionsdesk.deskrun import ledger_alerts, symbol_status  # noqa: E402
+from optionsdesk.ledger import Ledger  # noqa: E402
 from optionsdesk.scanner import scan_symbol  # noqa: E402
 
 LIVE = ROOT / "data" / "live"
@@ -61,12 +83,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--symbols", default="GLD,QQQ")
-    ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "yahoo"])
-    ap.add_argument("--dte", nargs=2, type=float, default=[0, 45])
+    ap.add_argument("--source", default="auto",
+                    choices=["auto", "ibkr", "yahoo", "marketdata"])
+    ap.add_argument("--dte", nargs=2, type=float, default=[0, 9],
+                    help="default covers the daily+weekly buckets only; see the cost note above")
+    ap.add_argument("--expiries", type=int, default=4)
     ap.add_argument("--market-hours-only", action="store_true")
     ap.add_argument("--notify", action="store_true", help="macOS notification on alert")
     ap.add_argument("--telegram", action="store_true", help="push alerts to Telegram")
     ap.add_argument("--quiet", action="store_true", help="print only when a rule fires")
+    ap.add_argument("--positions", action="store_true", default=True,
+                    help="track daily/weekly recommendations against the ledger")
+    ap.add_argument("--no-positions", dest="positions", action="store_false")
     args = ap.parse_args()
 
     now_ny = _dt.datetime.now(NY)
@@ -80,10 +108,14 @@ def main():
     csv_path = LIVE / f"intraday-{day}.csv"
     alert_path = LIVE / f"alerts-{day}.jsonl"
 
+    ledger = Ledger() if args.positions else None
+    desk_status: dict = {}
+
     fired: list[A.Alert] = []
     for sym in [s.strip().upper() for s in args.symbols.split(",") if s.strip()]:
         try:
-            scan = scan_symbol(sym, source=args.source, dte_range=tuple(args.dte))
+            scan = scan_symbol(sym, source=args.source, dte_range=tuple(args.dte),
+                               max_expiries=args.expiries)
         except Exception as exc:
             fired.append(A.Alert("critical", sym, "scan_failed", str(exc), {}))
             continue
@@ -91,6 +123,15 @@ def main():
         prev = last_row(csv_path, sym)
         found = A.evaluate(scan, prev)
         fired.extend(found)
+
+        # Mark-to-market and, if a bucket is empty, pick a fresh daily/weekly
+        # candidate -- reusing this SAME scan, so tracking positions never
+        # costs a second fetch on top of the regime check above.
+        if ledger is not None:
+            try:
+                desk_status[sym] = symbol_status(sym, scan, ledger, today=now_ny.date())
+            except Exception as exc:
+                print(f"[watch] {sym} position tracking failed: {exc}", file=sys.stderr)
 
         reg = scan.get("regime", {})
         c = scan.get("candidates")
@@ -128,6 +169,13 @@ def main():
                   f"VRP {reg.get('vrp', float('nan'))*100:+.1f}  "
                   f"cand {row['n_candidates']}/{row['n_positive_ev']}+  "
                   f"alerts {len(found)}")
+
+    if desk_status:
+        pos_alerts = ledger_alerts(desk_status)
+        fired.extend(pos_alerts)
+        if not args.quiet and pos_alerts:
+            print(f"[watch] {len(pos_alerts)} position event(s): "
+                  + ", ".join(f"{a.symbol}/{a.kind}" for a in pos_alerts))
 
     if fired:
         with alert_path.open("a", encoding="utf-8") as fh:

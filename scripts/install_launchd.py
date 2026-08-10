@@ -208,7 +208,7 @@ def main():
     ap.add_argument("--open", action="store_true", help="daily: open the report when done")
     ap.add_argument("--interval", type=int, default=300, help="collect: seconds between runs")
     ap.add_argument("--symbols", default="GLD,QQQ")
-    ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "yahoo"])
+    ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "marketdata", "yahoo"])
     ap.add_argument("--push", action="store_true", help="collect: git push each run")
     ap.add_argument("--notify", action="store_true", help="watch: macOS notification on alert")
     ap.add_argument("--telegram", action="store_true", help="send to Telegram")

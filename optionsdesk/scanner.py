@@ -32,7 +32,7 @@ from . import structures as X
 from . import surface as S
 from .sources import fetch
 
-__all__ = ["scan_symbol", "scan", "SCAN_COLUMNS"]
+__all__ = ["scan_symbol", "scan", "SCAN_COLUMNS", "expiry_buckets", "pick_daily_weekly"]
 
 SCAN_COLUMNS = [
     "symbol", "expiry", "dte", "name", "structure", "cost", "slippage",
@@ -40,6 +40,67 @@ SCAN_COLUMNS = [
     "pop_empirical", "max_profit", "max_loss", "widest_rel_spread",
     "delta_shares", "vega_dollars", "theta_dollars_per_day",
 ]
+
+
+def _leg_records(st: X.Structure) -> list[dict]:
+    """Serialise a Structure's legs so the ledger can rebuild it exactly."""
+    return [{"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
+             "strike": l.strike, "qty": l.qty} for l in st.legs]
+
+
+def week_friday(today: _dt.date) -> _dt.date:
+    """This week's Friday. If today IS Friday, that is today -- the daily and
+    weekly buckets correctly coincide on expiry Fridays."""
+    return today + _dt.timedelta(days=(4 - today.weekday()) % 7)
+
+
+def expiry_buckets(available_expiries, today: _dt.date | None = None) -> dict:
+    """Pick the target expiry for the 'daily' and 'weekly' buckets.
+
+    daily   the single nearest available expiry
+    weekly  the available expiry closest to this week's Friday
+
+    Nearest-to-Friday rather than an exact match, because not every underlying
+    lists daily expiries -- GLD does not -- so the 'weekly' slot degrades
+    gracefully to whatever is actually closest instead of coming back empty.
+    """
+    today = today or _dt.date.today()
+    avail = sorted({pd.Timestamp(e).date() for e in available_expiries
+                    if pd.Timestamp(e).date() >= today})
+    if not avail:
+        return {"daily": None, "weekly": None}
+    friday = week_friday(today)
+    weekly = min(avail, key=lambda d: abs((d - friday).days))
+    return {"daily": avail[0], "weekly": weekly}
+
+
+def pick_daily_weekly(scan_result: dict, today: _dt.date | None = None) -> dict:
+    """Best candidate per bucket, or None with the target date if nothing in
+    that bucket clears the cost test.
+
+    Returns {"daily": {"target_expiry": date|None, "candidate": Series|None},
+             "weekly": {...}}. The candidate, when present, is the top row for
+    that expiry from the already edge_per_risk-sorted candidates table,
+    restricted to genuinely positive expectancy -- the same bar the Telegram
+    formatter uses, so a bucket is never silently filled with a losing trade.
+    """
+    today = today or _dt.date.today()
+    cands = scan_result.get("candidates")
+    out = {"daily": {"target_expiry": None, "candidate": None},
+           "weekly": {"target_expiry": None, "candidate": None}}
+    if cands is None or cands.empty:
+        return out
+
+    buckets = expiry_buckets(cands["expiry"].unique(), today)
+    for name, target in buckets.items():
+        out[name]["target_expiry"] = target
+        if target is None:
+            continue
+        sub = cands[cands["expiry"] == target.isoformat()]
+        good = sub[sub["ev_empirical"] > 0] if len(sub) else sub
+        if len(good):
+            out[name]["candidate"] = good.iloc[0]
+    return out
 
 
 def _grid_for(df: pd.DataFrame, expiry, spot: float, width: float = 0.40,
@@ -84,19 +145,35 @@ def _candidates(df, expiry, spot, aggressive: bool = False,
 def scan_symbol(symbol: str, source: str = "auto", max_expiries: int = 8,
                 dte_range: tuple[float, float] = (0, 45), r: float = 0.04,
                 aggressive: bool = False, include_calendars: bool = True,
-                max_spread: float = 0.25) -> dict:
+                max_spread: float = 0.25, snap=None) -> dict:
     """Full scan of one underlying. Returns candidates plus the context needed
-    to interpret them."""
-    snap = fetch(symbol, source=source, max_expiries=max_expiries)
+    to interpret them.
+
+    Pass a pre-fetched `snap` (from sources.fetch or report.analyze's own
+    pull) to skip fetching again. On a metered source this is not an
+    optimisation to skip -- report.py and this function used to each fetch
+    independently, silently doubling the cost of every scheduled run.
+    """
+    snap = snap or fetch(symbol, source=source, max_expiries=max_expiries)
     df = M.prepare(snap, r=r, q=0.0)
     spot = snap.spot
     fits = S.fit_all_expiries(df, spot, r=r)
 
     if not fits:
+        # Symmetric with the success return below -- same keys, including
+        # _df/_history -- so a caller never needs a special case for "the
+        # scan came back empty". A missing key here is what let a caller
+        # crash with a bare KeyError('_df') instead of a readable message when
+        # this path was hit during illiquid pre-market data.
         return {"symbol": snap.symbol, "spot": spot, "asof": snap.asof.isoformat(),
-                "source": snap.source, "candidates": pd.DataFrame(),
+                "source": snap.source, "warnings": snap.warnings,
+                "candidates": pd.DataFrame(), "stock_based": pd.DataFrame(),
+                "relative_value": pd.DataFrame(),
                 "error": "no expiry produced a usable smile",
-                "rejected": getattr(fits, "rejected", {})}
+                "rejected": getattr(fits, "rejected", {}),
+                "regime": _regime(df, spot, fits, snap),
+                "n_fitted": 0, "carry": {},
+                "_df": df, "_history": snap.history}
 
     lo, hi = dte_range
     usable = [e for e in fits if lo <= fits[e]["T"] * 365 <= hi]
@@ -120,6 +197,7 @@ def scan_symbol(symbol: str, source: str = "auto", max_expiries: int = 8,
             rec = {
                 "symbol": snap.symbol, "expiry": str(pd.Timestamp(exp).date()),
                 "dte": round(f["T"] * 365, 1), "name": st.name, "structure": str(st),
+                "_legs": _leg_records(st),
                 "requires_shares": bool(st.meta.get("requires_shares")),
                 "capital_required": st.meta.get("capital_required"),
                 "cost": rn_res["cost"], "slippage": rn_res["slippage"],
@@ -156,6 +234,7 @@ def scan_symbol(symbol: str, source: str = "auto", max_expiries: int = 8,
                 rec = {
                     "symbol": snap.symbol, "expiry": str(pd.Timestamp(near).date()),
                     "dte": round(f["T"] * 365, 1), "name": st.name, "structure": str(st),
+                    "_legs": _leg_records(st),
                     "cost": rn_res["cost"], "slippage": rn_res["slippage"],
                     "ev_risk_neutral": rn_res["ev"],
                     "max_profit": rn_res["max_profit"], "max_loss": rn_res["max_loss"],
@@ -216,6 +295,13 @@ def scan_symbol(symbol: str, source: str = "auto", max_expiries: int = 8,
         "candidates": cands,
         "relative_value": rv,
         "regime": _regime(df, spot, fits, snap),
+        # Internal, underscore-prefixed: the prepared chain and history for
+        # this pull. Exposed so a caller (the ledger's mark-to-market) can
+        # reuse this SAME snapshot for open positions instead of re-fetching --
+        # a second pull costs a second batch of API credits for no new
+        # information, since nothing changed between two calls a second apart.
+        "_df": df,
+        "_history": snap.history,
     }
 
 

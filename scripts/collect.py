@@ -135,7 +135,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--symbols", default="GLD,QQQ")
-    ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "yahoo"])
+    ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "marketdata", "yahoo"])
     ap.add_argument("--expiries", type=int, default=6)
     ap.add_argument("--market-hours-only", action="store_true")
     ap.add_argument("--push", action="store_true", help="git commit + push after collecting")

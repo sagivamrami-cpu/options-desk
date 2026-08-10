@@ -236,6 +236,11 @@ def format_strategies_en(strategies: dict, per_symbol: int = 2) -> str:
                        f"max loss ${_n(abs(row['max_loss']), 0)}")
             out.append(f"  EV ${_sn(row['ev_empirical'], 2)} · "
                        f"POP {_n(float(row['pop_empirical'])*100, 0)}%")
+            th, ve, de = row.get("theta_dollars_per_day"), row.get("vega_dollars"), row.get("delta_shares")
+            if th is not None and th == th:
+                out.append(f"  greeks: theta ${_sn(th, 1)}/day · "
+                           f"vega ${_sn(ve, 1) if ve==ve else 'n/a'} · "
+                           f"delta {_sn(de, 1) if de==de else 'n/a'}")
             out.append(f"  target: {_esc(p.target)}")
             out.append(f"  stop: {_esc(p.stop)}")
             out.append(f"  time: {_esc(p.time_exit)}")
@@ -305,7 +310,9 @@ REGIME_HE = {
 
 
 def format_report_he(analyses: list[dict], artifact_url: str | None = None,
-                     strategies: dict | None = None) -> str:
+                     strategies: dict | None = None,
+                     desk_status: dict | None = None,
+                     upcoming_events: list | None = None) -> str:
     """The daily digest in Hebrew, with concrete structures and a plan."""
     if not analyses:
         return f"{RLM}<b>שולחן האופציות</b>\nלא התקבל דוח לאף נכס."
@@ -337,6 +344,14 @@ def format_report_he(analyses: list[dict], artifact_url: str | None = None,
     if dead:
         out.append(f"{RLM}⚠️ <i>נתונים חסרים עבור "
                    f"{_lt(', '.join(a['symbol'] for a in dead))} — הושמט.</i>")
+        out.append("")
+
+    if upcoming_events:
+        out.append(f"{RLM}<b>🗓️ אירועים השבוע:</b>")
+        for e in upcoming_events:
+            icon = "🔴" if e.impact == "high" else "🟡"
+            out.append(f"{RLM}{icon} {_lt(e.date.strftime('%a %d/%m'))} "
+                       f"{_lt(e.time_et)} ET — {e.kind}: {_esc(e.label)}")
         out.append("")
 
     for a in live:
@@ -376,6 +391,11 @@ def format_report_he(analyses: list[dict], artifact_url: str | None = None,
                        f"תנועה צפויה {_lt('±' + _n(em, 2) + '%')}")
         out.append("")
 
+    # Desk status (the tracked daily/weekly recommendations) is the primary,
+    # actionable content, so it renders before the broader multi-expiry
+    # candidate list, which is context rather than a second set of instructions.
+    if desk_status:
+        out.append(format_desk_status_he(desk_status))
     if strategies:
         out.append(format_strategies_he(strategies))
 
@@ -426,6 +446,19 @@ def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
             out.append(f"{RLM}תוחלת: {_lt('$' + _sn(row['ev_empirical'], 2))}"
                        f"  ·  סיכוי לרווח: {_lt(_n(float(row['pop_empirical'])*100, 0) + '%')}")
 
+            # Greeks: what actually generates or erodes the P&L day to day,
+            # not just the terminal payoff. Theta on a credit structure is the
+            # daily rent you collect; on a debit structure it is what you pay
+            # to hold the view. Vega says how much a pure IV move -- with spot
+            # unchanged -- helps or hurts.
+            th = row.get("theta_dollars_per_day")
+            ve = row.get("vega_dollars")
+            de = row.get("delta_shares")
+            if th is not None and th == th:
+                out.append(f"{RLM}יווניות: תטא {_lt('$' + _sn(th, 1))}/יום"
+                           f"  ·  וגא {_lt('$' + _sn(ve, 1) if ve==ve else 'n/a')}"
+                           f"  ·  דלתא {_lt(_sn(de, 1) if de==de else 'n/a')}")
+
             out.append(f"{RLM}<b>ניהול:</b>")
             out.append(f"{RLM}• יעד: {_esc(p['target'])}")
             out.append(f"{RLM}• עצירה: {_esc(p['stop'])}")
@@ -445,7 +478,92 @@ def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
     return "\n".join(out)
 
 
+BUCKET_LABEL_HE = {"daily": "אסטרטגיה יומית", "weekly": "אסטרטגיה עד סופ\"ש"}
+
+
+def _event_line_he(event_risk: dict | None) -> str | None:
+    if not event_risk or not event_risk.get("events"):
+        return None
+    tags = ", ".join(f"{e.kind} {_lt(e.date.strftime('%d/%m'))}" for e in event_risk["events"])
+    icon = "🔴" if event_risk["has_high_impact"] else "🟡"
+    return f"{RLM}{icon} <i>אירוע מאקרו בטווח הפקיעה: {tags}</i>"
+
+
+def format_desk_status_he(status_by_symbol: dict) -> str:
+    """The daily + weekly bucket status per symbol: a fresh recommendation,
+    or a mark-to-market update on the one already tracked, with a management
+    verdict -- exactly the "is it still on track, does it need fixing"
+    question a desk asks every morning, plus whatever moved since the market
+    started trading.
+    """
+    from .management import plan_he
+
+    out = [f"{RLM}━━━━━━━━━━━━━━━━━━━━", f"{RLM}<b>📋 מעקב אסטרטגיות</b>", ""]
+
+    for sym, buckets in status_by_symbol.items():
+        for bucket in ("daily", "weekly"):
+            info = buckets.get(bucket)
+            if info is None:
+                continue
+            label = BUCKET_LABEL_HE[bucket]
+            out.append(f"{RLM}<b>{_lt(_esc(sym))} · {label}</b>")
+
+            for closed in info.get("just_closed", []):
+                p = closed["position"]
+                reason = {"target": "הגיע ליעד ✅", "stop": "הגיע לעצירה ⛔",
+                         "expired": "פקע"}.get(p.close_reason, p.close_reason)
+                out.append(f"{RLM}  נסגר: {_lt(_esc(p.name))} — {reason} "
+                           f"(P&L סופי {_lt('$' + _sn(closed['pnl'], 0))})")
+
+            if info["status"] == "existing":
+                m = info["mark"]
+                p = m["position"]
+                out.append(f"{RLM}  {_lt(_esc(p.name))}  ({_lt(_esc(p.expiry))}, "
+                           f"נפתח {_lt(_esc(p.opened_at[:10]))})")
+                out.append(f"{RLM}  P&L נוכחי: {_lt('$' + _sn(m['pnl'], 0))}"
+                           f"  ·  ספוט זז {_lt(_sn(m['spot_move_pct'], 2) + '%')} מהכניסה"
+                           f"  ·  {_lt(_n(m['dte_left'], 0))} ימים לפקיעה")
+                if m["strike_crossings"]:
+                    for c in m["strike_crossings"]:
+                        out.append(f"{RLM}  ⚠️ <b>המחיר חצה את הסטרייק {_lt(_n(c['strike'],0))} "
+                                   f"({_esc(c['from'])}→{_esc(c['to'])}) — התזה נבחנת</b>")
+                if m["hit_target"]:
+                    out.append(f"{RLM}  ✅ <b>הגיע ליעד הרווח — מומלץ לסגור</b>")
+                elif m["hit_stop"]:
+                    out.append(f"{RLM}  ⛔ <b>הגיע לעצירה — מומלץ לסגור, אל תוסיף גודל</b>")
+                elif m["strike_crossings"]:
+                    plan = plan_he({"name": p.name, "cost": p.entry_cost,
+                                    "max_profit": p.max_profit, "max_loss": p.max_loss,
+                                    "dte": m["dte_left"]}, m["spot"])
+                    out.append(f"{RLM}  תיקון אפשרי: {_esc(plan['adjust'])}")
+                else:
+                    out.append(f"{RLM}  סטטוס: בתוך התוואי, ללא צורך בפעולה")
+
+            elif info["status"] == "new":
+                pos, cand = info["position"], info["candidate"]
+                cost = pos.entry_cost
+                out.append(f"{RLM}  <b>המלצה חדשה:</b> {_lt(_esc(pos.name))}")
+                out.append(f"{RLM}  פקיעה {_lt(_esc(pos.expiry))}"
+                           f"  ·  {'קרדיט' if cost<0 else 'חיוב'} {_lt('$' + _n(abs(cost),0))}")
+                out.append(f"{RLM}  יעד {_lt('$' + _n(pos.target_pnl,0))}"
+                           f"  ·  עצירה {_lt('$' + _n(abs(pos.stop_pnl),0))}"
+                           f"  ·  סיכוי לרווח {_lt(_n(float(cand.get('pop_empirical',0))*100,0)+'%')}")
+
+            else:
+                out.append(f"{RLM}  אין מבנה שעובר את מבחן העלויות לפקיעה זו כרגע")
+
+            ev_line = _event_line_he(info.get("event_risk"))
+            if ev_line:
+                out.append(ev_line)
+            out.append("")
+
+    return "\n".join(out)
+
+
 def send_report_he(analyses: list[dict], artifact_url: str | None = None,
                    strategies: dict | None = None,
-                   cfg: TelegramConfig | None = None) -> bool:
-    return send(format_report_he(analyses, artifact_url, strategies), cfg)
+                   cfg: TelegramConfig | None = None,
+                   desk_status: dict | None = None,
+                   upcoming_events: list | None = None) -> bool:
+    text = format_report_he(analyses, artifact_url, strategies, desk_status, upcoming_events)
+    return send(text, cfg)

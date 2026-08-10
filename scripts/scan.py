@@ -30,7 +30,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--symbols", default="GLD,QQQ")
-    ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "yahoo"])
+    ap.add_argument("--source", default="auto", choices=["auto", "ibkr", "marketdata", "yahoo"])
     ap.add_argument("--dte", nargs=2, type=float, default=[0, 45], metavar=("MIN", "MAX"))
     ap.add_argument("--top", type=int, default=12)
     ap.add_argument("--aggressive", action="store_true",

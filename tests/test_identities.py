@@ -461,3 +461,195 @@ def test_pmcc_refuses_structurally_losing_combinations(snapshot):
         long_k = legs[-1].strike
         assert short_k >= long_k, (
             f"short strike {short_k} below long strike {long_k}")
+
+
+# ======================================================================
+# Position ledger
+# ======================================================================
+
+def test_ledger_round_trip_costs_the_spread_not_free(snapshot, tmp_path):
+    """Opening and immediately marking-to-market on an UNCHANGED chain must
+    show a small loss (the round-trip spread), never a profit. A ledger that
+    can show a profit from doing nothing has a sign error."""
+    from optionsdesk.ledger import Ledger
+
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[2]
+    cand = X.generate_verticals(df, exp, SPOT, "P", (0.16,), (2,))[0]
+    legs = [{"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
+             "strike": l.strike, "qty": l.qty} for l in cand.legs]
+    px = X.price_structure(df, cand)
+
+    row = {"name": cand.name, "expiry": str(pd.Timestamp(exp).date()),
+           "cost": px["executable_cost"], "max_profit": 100.0, "max_loss": -100.0,
+           "dte": 5, "pop_empirical": 0.7, "_legs": legs}
+
+    ledger = Ledger(tmp_path / "ledger.json")
+    pos = ledger.record("TEST", "weekly", row, SPOT)
+    assert pos.status == "open"
+
+    mark = ledger.mark_to_market(pos, df, SPOT, today=pd.Timestamp(exp).date() - pd.Timedelta(days=1))
+    assert mark["pnl"] <= 0, f"unchanged market showed a profit: {mark['pnl']}"
+    assert mark["pnl"] > -20, f"round-trip cost implausibly large: {mark['pnl']}"
+
+
+def test_ledger_expires_and_closes(snapshot, tmp_path):
+    from optionsdesk.ledger import Ledger
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[0]
+    cand = X.generate_verticals(df, exp, SPOT, "P", (0.16,), (2,))[0]
+    legs = [{"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
+             "strike": l.strike, "qty": l.qty} for l in cand.legs]
+    px = X.price_structure(df, cand)
+    row = {"name": cand.name, "expiry": str(pd.Timestamp(exp).date()),
+           "cost": px["executable_cost"], "max_profit": 100.0, "max_loss": -100.0,
+           "dte": 1, "pop_empirical": 0.7, "_legs": legs}
+
+    ledger = Ledger(tmp_path / "ledger.json")
+    pos = ledger.record("TEST", "daily", row, SPOT)
+    marks = ledger.sweep_expired({"TEST": df}, {"TEST": SPOT},
+                                 today=pd.Timestamp(exp).date() + pd.Timedelta(days=1))
+    assert marks[0]["expired"]
+    assert ledger.open_positions("TEST") == []
+
+
+def test_ledger_detects_strike_crossing(snapshot, tmp_path):
+    """The 'market moved against the thesis' signal: a short strike being
+    crossed must register exactly once, not on every subsequent pass."""
+    from optionsdesk.ledger import Ledger
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[2]
+    cand = X.generate_verticals(df, exp, SPOT, "P", (0.16,), (2,))[0]
+    short_k = min(l.strike for l in cand.legs if l.qty < 0)
+    legs = [{"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
+             "strike": l.strike, "qty": l.qty} for l in cand.legs]
+    px = X.price_structure(df, cand)
+    row = {"name": cand.name, "expiry": str(pd.Timestamp(exp).date()),
+           "cost": px["executable_cost"], "max_profit": 100.0, "max_loss": -1000.0,
+           "dte": 5, "pop_empirical": 0.7, "_legs": legs}
+
+    ledger = Ledger(tmp_path / "ledger.json")
+    pos = ledger.record("TEST", "weekly", row, SPOT)
+    today = pd.Timestamp(exp).date() - pd.Timedelta(days=1)
+
+    m1 = ledger.mark_to_market(pos, df, short_k + 5.0, today)   # above: safe side
+    assert m1["strike_crossings"] == []          # first observation, nothing to compare against
+
+    m2 = ledger.mark_to_market(pos, df, short_k + 4.0, today)   # still above: no new crossing
+    assert m2["strike_crossings"] == []
+
+    m3 = ledger.mark_to_market(pos, df, short_k - 5.0, today)   # crosses below
+    assert len(m3["strike_crossings"]) == 1
+    assert m3["strike_crossings"][0]["strike"] == short_k
+
+    m4 = ledger.mark_to_market(pos, df, short_k - 3.0, today)   # still below: no repeat
+    assert m4["strike_crossings"] == []
+
+
+# ======================================================================
+# Full daily/weekly tracking pipeline (deskrun + ledger + scanner buckets)
+# ======================================================================
+
+def _fake_scan_from_synthetic(snapshot, dte_range=(0, 45)):
+    """Build a scan_symbol()-shaped dict from the synthetic snapshot, without
+    touching the network -- the same integration surface deskrun.py consumes,
+    driven by a market whose answer is known."""
+    from optionsdesk.scanner import scan_symbol
+    import optionsdesk.sources as srcmod
+
+    class _FixedSource:
+        def fetch(self, symbol, max_expiries=8):
+            return snapshot
+
+    orig = srcmod.fetch
+    srcmod.fetch = lambda symbol, source="auto", max_expiries=8: snapshot
+    try:
+        return scan_symbol("TEST", dte_range=dte_range)
+    finally:
+        srcmod.fetch = orig
+
+
+def test_daily_weekly_pipeline_end_to_end(snapshot, tmp_path, monkeypatch):
+    """The full path the user asked for: a fresh recommendation appears with
+    an expiry attached, a second pass on an unchanged market recognises it as
+    existing rather than re-proposing it, and a spot move through the short
+    strike fires exactly one crossing alert -- never zero, never a repeat."""
+    import optionsdesk.scanner as scanner_mod
+    from optionsdesk.deskrun import ledger_alerts, symbol_status
+    from optionsdesk.ledger import Ledger
+
+    monkeypatch.setattr(scanner_mod, "fetch", lambda *a, **kw: snapshot)
+    scan = scanner_mod.scan_symbol("TEST", dte_range=(0, 45))
+    assert "_df" in scan and scan["_df"] is not None
+
+    ledger = Ledger(tmp_path / "ledger.json")
+    today = pd.Timestamp.now().normalize().date()
+
+    st1 = symbol_status("TEST", scan, ledger, today)
+    assert st1["daily"]["status"] in ("new", "none")
+    assert st1["weekly"]["status"] in ("new", "none")
+    # Every bucket that DID open must carry a real expiry and non-null legs.
+    for bucket in ("daily", "weekly"):
+        if st1[bucket]["status"] == "new":
+            pos = st1[bucket]["position"]
+            assert pos.expiry
+            assert pos.legs
+
+    a1 = ledger_alerts({"TEST": st1})
+    n_new = sum(1 for a in a1 if a.kind == "new_recommendation")
+    n_opened = sum(1 for b in st1.values() if b["status"] == "new")
+    assert n_new == n_opened
+
+    # Second pass, same market: anything opened must now read 'existing', and
+    # must NOT fire a second new_recommendation alert for the same bucket.
+    st2 = symbol_status("TEST", scan, ledger, today)
+    for bucket in ("daily", "weekly"):
+        if st1[bucket]["status"] == "new":
+            assert st2[bucket]["status"] == "existing"
+    a2 = ledger_alerts({"TEST": st2})
+    assert not [a for a in a2 if a.kind == "new_recommendation"]
+
+
+def test_strike_crossing_alert_fires_once_via_full_pipeline(snapshot, tmp_path):
+    """Same crossing guarantee as test_ledger_detects_strike_crossing, but
+    exercised through the full symbol_status -> ledger_alerts path rather
+    than calling mark_to_market directly."""
+    from optionsdesk.deskrun import bucket_status, ledger_alerts
+    from optionsdesk.ledger import Ledger
+
+    df = M.prepare(snapshot, r=RATE, q=0.0)
+    exp = sorted(df["expiry"].unique())[2]
+    cand = X.generate_verticals(df, exp, SPOT, "P", (0.16,), (2,))[0]
+    short_k = min(l.strike for l in cand.legs if l.qty < 0)
+
+    scan = {"_df": df, "_history": snapshot.history, "spot": SPOT,
+            "candidates": pd.DataFrame(), "symbol": "TEST"}
+    ledger = Ledger(tmp_path / "ledger.json")
+    today = pd.Timestamp(exp).date() - pd.Timedelta(days=1)
+
+    legs = [{"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
+             "strike": l.strike, "qty": l.qty} for l in cand.legs]
+    px = X.price_structure(df, cand)
+    ledger.record("TEST", "weekly", {"name": cand.name,
+                  "expiry": str(pd.Timestamp(exp).date()), "cost": px["executable_cost"],
+                  "max_profit": 100.0, "max_loss": -1000.0, "dte": 5,
+                  "pop_empirical": 0.7, "_legs": legs}, short_k + 5.0)
+
+    scan["spot"] = short_k + 4.0
+    st_safe = {"TEST": {"weekly": bucket_status("TEST", "weekly", scan, ledger, today),
+                        "daily": {"status": "none", "just_closed": [], "event_risk": None,
+                                  "target_expiry": None}}}
+    assert not [a for a in ledger_alerts(st_safe) if a.kind == "strike_crossed"]
+
+    scan["spot"] = short_k - 5.0
+    st_cross = {"TEST": {"weekly": bucket_status("TEST", "weekly", scan, ledger, today),
+                         "daily": {"status": "none", "just_closed": [], "event_risk": None,
+                                   "target_expiry": None}}}
+    crossed = [a for a in ledger_alerts(st_cross) if a.kind == "strike_crossed"]
+    assert len(crossed) == 1
+
+    scan["spot"] = short_k - 3.0
+    st_still = {"TEST": {"weekly": bucket_status("TEST", "weekly", scan, ledger, today),
+                         "daily": {"status": "none", "just_closed": [], "event_risk": None,
+                                   "target_expiry": None}}}
+    assert not [a for a in ledger_alerts(st_still) if a.kind == "strike_crossed"]

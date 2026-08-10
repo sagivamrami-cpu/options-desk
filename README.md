@@ -11,14 +11,18 @@ It is a positioning read, not a price forecast, and not financial advice.
 
 ```bash
 ./scripts/bootstrap.sh                                  # picks a suitable Python, installs, verifies
-./.venv/bin/python scripts/daily_report.py              # the daily report
+./.venv/bin/python scripts/daily_report.py --telegram    # the daily report, sent to Telegram (Hebrew by default)
 ./.venv/bin/python scripts/scan.py --dte 0 45           # ranked structure candidates
 ./.venv/bin/python scripts/watch.py                     # one watcher pass
-./.venv/bin/python -m pytest tests/ -q                  # 19 tests
+./.venv/bin/python -m pytest tests/ -q                  # 30 tests
 ```
 
-Data comes from IB Gateway when it is running and Yahoo otherwise, decided by a
-0.3 ms TCP probe. No broker account is needed for anything here.
+Data comes from IB Gateway when it is running, then marketdata.app when a
+token is configured (plain REST, works from a cloud run, real open interest —
+but credit-metered, roughly one credit per contract), then Yahoo (free,
+delayed, no metering, but open interest reads as zero pre-market). Decided
+automatically: a 0.3 ms TCP probe for Gateway, then whichever of the other two
+is configured. No broker account is required for anything here.
 
 ## What it computes
 
@@ -37,6 +41,20 @@ density argument.
 
 **Alerting** (`alerts.py`, `watch.py`) — every rule fires on a state change,
 never on a level.
+
+**Daily/weekly tracking** (`ledger.py`, `deskrun.py`) — persists a recommended
+structure for two buckets per symbol (`daily`: nearest expiry, `weekly`:
+closest to this week's Friday), marks it to market on every later run, and
+auto-closes on target, stop, or expiry. A short strike being crossed fires
+once, on the pass it actually happens — not a real position, never a real
+fill, just the system's own tracked idea updated over time. Every structure
+also carries a management plan (`management.py`): target, stop, the 21-DTE
+gamma-window exit, and a family-specific adjustment rule.
+
+**Macro events** (`events.py`) — FOMC/CPI/NFP dates for 2026, hand-verified
+from federalreserve.gov and bls.gov rather than computed from a "first Friday"
+rule (2026 already breaks that rule twice for NFP alone). Every tracked
+position's expiry is checked against it.
 
 ## The one thing to understand before using this
 
@@ -94,24 +112,37 @@ optionsdesk/
   metrics.py        positioning and volatility metrics
   surface.py        SVI fitting, arbitrage checks, risk-neutral density
   structures.py     multi-leg construction, pricing, expected value
-  scanner.py        candidate generation and ranking
+  scanner.py        candidate generation, ranking, daily/weekly bucket picking
+  management.py     per-family exit and adjustment plans
+  ledger.py         persisted recommendations, marked to market
+  deskrun.py        ties the scanner + ledger + event calendar together
+  events.py         FOMC/CPI/NFP calendar
   alerts.py         change-only alert rules
+  notify.py         Telegram delivery (Hebrew by default), bidi-safe formatting
   report.py         orchestration
   render.py         HTML dashboard
-  sources/          IBKR and Yahoo adapters behind one contract
-scripts/            bootstrap, daily_report, scan, watch, collect, ib_check, install_launchd
+  sources/          IBKR, marketdata.app and Yahoo adapters behind one contract
+scripts/            bootstrap, daily_report, scan, watch, collect, ib_check,
+                    install_launchd, setup_telegram
 knowledge/          ten chapters
-tests/              19 tests against a synthetic market with a known answer
+tests/              30 tests against a synthetic market with a known answer
 ```
 
 ## Why there are so many tests for a personal project
 
-Nine real bugs were found here, every one by checking a mathematical identity
+Ten real bugs were found here, every one by checking a mathematical identity
 rather than by reading the code: present versus future value, a truncated
 integration grid, an assumed forward, sample drift, Jensen's inequality in the
 recentring, density truncation, fitting deep-ITM options, a hardcoded market
-data type, and an install that failed silently.
+data type, an install that failed silently, and a test fixture whose term
+structure didn't scale with time — which silently produced a 105.7% implied
+vol on a 7-day option and made a calendar spread look like a $92 debit against
+a $2,231 expected value.
 
 Several of them made short-premium structures look like free money. That is the
 specific failure mode this project exists to avoid, so the identities are now
-locked in `tests/`.
+locked in `tests/`. A separate, real cost bug also turned up during
+development: `report.py` and `scanner.py` each independently fetched the same
+chain, silently doubling the cost of every run on a metered source — enough
+to exhaust marketdata.app's entire 10,000-credit free-tier day from testing
+alone. Both now share one fetch.

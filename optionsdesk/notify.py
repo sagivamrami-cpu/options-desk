@@ -448,7 +448,7 @@ def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
     and presenting one as a suggestion would be exactly the confusion this
     project exists to avoid.
     """
-    from .management import has_bounded_max_profit, plan_he
+    from .management import has_bounded_max_profit, family_blurb_he, plan_he
 
     out = [f"{RLM}━━━━━━━━━━━━━━━━━━━━", f"{RLM}<b>🎯 הצעות מבנה</b>", ""]
     any_found = False
@@ -468,9 +468,15 @@ def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
             cost = float(row["cost"])
             is_credit = cost < 0
 
-            out.append(f"{RLM}<b>{_lt(_esc(sym))} · {_esc(p['family_he'])}</b>")
+            title = (f"{_esc(p['intuitive_he'])} ({_esc(p['family_he'])})"
+                    if p.get("intuitive_he") else _esc(p['family_he']))
+            out.append(f"{RLM}<b>{_lt(_esc(sym))} · {title}</b>")
+            blurb = family_blurb_he(row['name'])
+            if blurb:
+                out.append(f"{RLM}<i>{_esc(blurb)}</i>")
             out.append(f"{RLM}פקיעה: {_lt(_esc(row['expiry']))} "
-                       f"({_lt(_n(row['dte'], 0))} ימים)")
+                       f"({_lt(_n(row['dte'], 0))} ימים)  ·  "
+                       f"ספוט נוכחי: {_lt('$' + _n(spot, 2))}")
             out.append(f"{RLM}<b>לביצוע:</b>")
             legs = row.get("_legs")
             if legs:
@@ -480,6 +486,10 @@ def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
             out.append(f"{RLM}נטו: {'קרדיט' if is_credit else 'חיוב'} "
                        f"{_lt('$' + _n(abs(cost), 0))}"
                        f"  ·  עלות מרווח (bid/ask) {_lt('$' + _n(row.get('slippage', 0), 0))}")
+            bes = row.get("breakevens") or []
+            if bes:
+                be_txt = " ⬌ ".join(_lt("$" + _n(b, 2)) for b in bes)
+                out.append(f"{RLM}נקודות איזון: {be_txt}")
             # A long straddle's (and similar families') scanner-reported
             # max_profit is a grid-truncation artifact -- the payoff grows
             # monotonically toward the edge of whatever probability grid was
@@ -507,11 +517,18 @@ def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
                            f"  ·  וגא {_lt('$' + _sn(ve, 1) if ve==ve else 'n/a')}"
                            f"  ·  דלתא {_lt(_sn(de, 1) if de==de else 'n/a')}")
 
-            out.append(f"{RLM}<b>ניהול:</b>")
-            out.append(f"{RLM}• יעד: {_esc(p['target'])}")
-            out.append(f"{RLM}• עצירה: {_esc(p['stop'])}")
-            out.append(f"{RLM}• זמן: {_esc(p['time_exit'])}")
-            out.append(f"{RLM}• תיקון: {_esc(p['adjust'])}")
+            # Staged rather than a flat bullet list: what has to happen for
+            # the trade to pay off, then one line per point in its life --
+            # entry, ongoing watch, an adverse move, the gamma-window time
+            # exit, and the numeric exit itself -- so "how do I manage this"
+            # has a concrete answer at every point, not just at the end.
+            out.append(f"{RLM}<b>📋 ניהול העסקה:</b>")
+            out.append(f"{RLM}מה צריך שיקרה כדי שזה יעבוד: {_esc(p['needs'])}")
+            out.append(f"{RLM}1. בכניסה — {_esc(p['entry_check'])}")
+            out.append(f"{RLM}2. תוך כדי החזקה — {_esc(p['monitor'])}")
+            out.append(f"{RLM}3. אם המחיר זז נגד התזה — {_esc(p['adjust'])}")
+            out.append(f"{RLM}4. קרוב לפקיעה — {_esc(p['time_exit'])}")
+            out.append(f"{RLM}5. יציאה — יעד: {_esc(p['target'])}  ·  עצירה: {_esc(p['stop'])}")
             if p["warn"]:
                 out.append(f"{RLM}⚠️ <i>{_esc(p['warn'])}</i>")
             out.append("")

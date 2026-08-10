@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import math
 
-__all__ = ["plan_for", "target_stop_for", "has_bounded_max_profit", "ManagementPlan"]
+__all__ = ["plan_for", "target_stop_for", "has_bounded_max_profit", "family_blurb_he",
+           "intuitive_name_he", "ManagementPlan"]
 
 # Families whose scanner-reported max_profit is a real, interior maximum --
 # a butterfly peaks at its body, a calendar at its pin (both verified by
@@ -306,10 +307,118 @@ FAMILY_HE = {
     "iron_butterfly": "איירון בטרפליי",
     "butterfly": "פרפר",
     "calendar": "ספרד קלנדרי",
-    "straddle_long": "סטרדל (לונג)",
+    "straddle_long": "סטרדל לונג",
     "undefined": "סיכון בלתי מוגבל",
     "other": "מבנה",
 }
+
+# One line of "what this actually is", shown before the leg list so a trader
+# reads the mechanics before the strikes -- e.g. a long straddle's call and
+# put SHARE a strike on purpose (that is what makes it a direction-agnostic
+# bet on move size), which reads as a mistake without this line.
+_BLURB_HE = {
+    "covered_call": "מניה בבעלות + קול קצר — מוותרים על חלק מהעלייה תמורת פרמיה.",
+    "protective_put": "מניה בבעלות + פוט כביטוח — ההפסד למטה מוגבל, הרווח למעלה נשאר פתוח.",
+    "csp": "מכירת פוט מכוסה במזומן — מוכנים לקנות את המניה בסטרייק, בתמורה לפרמיה.",
+    "pmcc": "\"קול מכוסה של עני\" — קול ארוך במקום מניה בפועל, פלוס קול קצר נגדו.",
+    "diagonal": "סטרייקים שונים וגם תאריכי פקיעה שונים — תנועה בכיוון, ממומנת במכירת פרמיה קצרה.",
+    "vertical": "שני סטרייקים באותו כיוון — סיכון ורווח שניהם מוגבלים וידועים מראש.",
+    "condor": "ארבעה סטרייקים — מרוויחים אם המחיר נשאר בטווח שביניהם.",
+    "iron_butterfly": "מכירת סטרדל צמוד + קניית כנפיים להגנה — מרוויחים אם המחיר נשאר קרוב לסטרייק המרכזי.",
+    "butterfly": "שלושה סטרייקים על אותו צד — הרווח הגדול ביותר אם המחיר ננעל בדיוק על הסטרייק האמצעי.",
+    "calendar": "אותו סטרייק, שני תאריכי פקיעה — רגל קרובה נשחקת מהר יותר מהרחוקה, כל עוד המחיר לא זז יותר מדי.",
+    "straddle_long": "קול ופוט **באותו סטרייק בכוונה** — לא טעות: מרוויחים אם המחיר זז חזק בכל כיוון, בלי לנחש לאיזה כיוון.",
+    "undefined": "סיכון בלתי מוגבל — אין הפסד מקסימלי קבוע מראש.",
+}
+
+
+def family_blurb_he(name: str) -> str | None:
+    """One-line Hebrew explainer of what this family of structure actually
+    is, for a trader who has never seen this shape before."""
+    return _BLURB_HE.get(_family(name))
+
+
+# A plain-language Hebrew title, shown ahead of the transliterated jargon
+# name ("straddle", "condor") in the header -- someone who has never traded
+# options should be able to read the header alone and know roughly what kind
+# of bet this is, without first learning the English term for it.
+INTUITIVE_NAME_HE = {
+    "covered_call": "הכנסה נוספת על מניה שבבעלותך",
+    "protective_put": "ביטוח למניה שבבעלותך",
+    "csp": "מוכן לקנות בזול, מתוגמל בפרמיה",
+    "pmcc": "קול מכוסה בלי להחזיק מניה",
+    "diagonal": "ספרד מדורג (סטרייקים ותאריכים שונים)",
+    "vertical": "ספרד מוגבל סיכון",
+    "condor": "הימור על טווח מחיר",
+    "iron_butterfly": "מכירת תנודתיות צמודה, עם הגנה",
+    "butterfly": "הימור על עמידה במקום",
+    "calendar": "ניצול פער בשחיקת זמן",
+    "straddle_long": "הימור על תנועה חדה בכל כיוון",
+    "undefined": "מכירת פרמיה בסיכון פתוח",
+}
+
+
+def intuitive_name_he(name: str) -> str | None:
+    """Plain-language title for the header, ahead of the jargon name."""
+    return INTUITIVE_NAME_HE.get(_family(name))
+
+
+# ----------------------------------------------------------------------
+# Stage-by-stage management guidance: what has to happen for the trade to
+# pay off, what to check before entering, and what to watch while it's open.
+# Kept separate from the existing target/stop/time-exit/adjust logic below
+# (which stays dte- and price-dependent) so this static, family-only text
+# doesn't need to be recomputed per candidate.
+# ----------------------------------------------------------------------
+
+_NEEDS_HE = {
+    "covered_call": "המניה נשארת מתחת לסטרייק, או שאתה בסדר עם מכירתה שם",
+    "protective_put": "זו לא עסקה עם \"צריך\" — זה ביטוח; הוא עובד כשצריך אותו",
+    "csp": "המניה נשארת מעל הסטרייק, או שאתה מוכן לקבל אותה שם",
+    "pmcc": "המחיר עולה בהדרגה, בלי קריסת תנודתיות ברגל הארוכה",
+    "diagonal": "המחיר זז בכיוון שציפית, לא מהר מדי, בזמן שהרגל הקצרה נשחקת",
+    "vertical": "המחיר נשאר מהצד הנכון של הסטרייק הקצר עד הפקיעה",
+    "condor": "המחיר נשאר בטווח שבין שני הסטרייקים הקצרים עד הפקיעה",
+    "iron_butterfly": "המחיר נשאר קרוב מאוד לסטרייק המרכזי עד הפקיעה",
+    "butterfly": "המחיר ננעל קרוב לסטרייק האמצעי בזמן הפקיעה",
+    "calendar": "המחיר נשאר קרוב לסטרייק, והרגל הקרובה נשחקת מהר מהרחוקה",
+    "straddle_long": "המחיר זז יותר ממה שהתנודתיות הגלומה מתמחרת, ומהר",
+    "undefined": "המחיר לא מגיע לאזור שבו הרגל החשופה נכנסת לכסף",
+}
+
+_ENTRY_HE = {
+    "covered_call": "לוודא שהפרמיה שווה את הוויתור על העלייה מעל הסטרייק",
+    "protective_put": "לבחור סטרייק לפי כמה ירידה אתה מוכן לספוג לפני שההגנה נכנסת",
+    "csp": "לוודא שהסטרייק הוא מחיר שבאמת היית קונה בו את המניה",
+    "pmcc": "לוודא שהרגל הארוכה עמוק מספיק בכסף כדי להתנהג כמו מניה",
+    "diagonal": "לוודא שהרגל הארוכה לא נמכרת מתחתיה במקרה של הקצאה בהפסד",
+    "vertical": "לוודא שהקרדיט שווה את הסיכון — לא למכור ספרד צר מדי בשביל פרמיה קטנה",
+    "condor": "לוודא שהטווח בין הסטרייקים הקצרים סביר ביחס לתנודתיות הצפויה",
+    "iron_butterfly": "לוודא שהפרמיה שקיבלת מצדיקה טווח כל כך צר",
+    "butterfly": "לוודא שהסטרייק האמצעי אכן קרוב למקום שבו אתה מצפה שהמחיר יהיה",
+    "calendar": "לוודא שיש הבדל תנודתיות אמיתי בין שתי הפקיעות, לא רק זמן שונה",
+    "straddle_long": "לוודא שה‑IV לא כבר גבוה מדי — קונים תנועה, לא נכנסים למחיר שכבר משלם עליה",
+    "undefined": "לגדל לפי תרחיש קיצון, לא לפי דרישת המרווח בברוקר",
+}
+
+_MONITOR_HE = {
+    "covered_call": "לעקוב אחרי המרחק בין המחיר לסטרייק, לא רק אחרי הפרמיה",
+    "protective_put": "לעקוב אחרי תאריך הפקיעה של הביטוח, לא רק אחרי המניה",
+    "csp": "לעקוב אחרי המרחק בין המחיר לסטרייק",
+    "pmcc": "לעקוב אחרי הוגא של הרגל הארוכה, לא רק אחרי המחיר",
+    "diagonal": "לעקוב גם אחרי הדלתא נטו, לא רק אחרי כל רגל בנפרד",
+    "vertical": "לעקוב אחרי המרחק מהסטרייק הקצר, לא אחרי הרווח הלא ממומש",
+    "condor": "לעקוב אחרי שני הצדדים — קונדור יכול להיפגע משני הכיוונים",
+    "iron_butterfly": "לעקוב מקרוב — הרווח נשחק מהר ברגע שהמחיר זז מהמרכז",
+    "butterfly": "לעקוב אחרי המרחק מהגוף — פרפר לא מרוויח עד שהמחיר קרוב אליו",
+    "calendar": "לעקוב אחרי שתי הרגליים בנפרד — תנודתיות ברגל הרחוקה חשובה לא פחות מהמחיר",
+    "straddle_long": "לעקוב אחרי שתי נקודות האיזון, לא אחרי כיוון אחד",
+    "undefined": "לעקוב במיוחד אחרי הרגל החשופה — שם נמצא הסיכון הלא מוגבל",
+}
+
+_DEFAULT_NEEDS_HE = "להגדיר מראש מה אמור לקרות כדי שהעסקה תרוויח"
+_DEFAULT_ENTRY_HE = "לוודא שהמחיר שקיבלת קרוב למחיר האמצע"
+_DEFAULT_MONITOR_HE = "לעקוב אחרי הפרמטר שהכי משנה את הרווח בעסקה הזו"
 
 
 def plan_he(candidate: dict, spot: float) -> dict:
@@ -423,5 +532,10 @@ def plan_he(candidate: dict, spot: float) -> dict:
     elif fam in ("vertical", "condor", "iron_butterfly") and is_credit:
         warn = "מכירת פרמיה — פער פתיחה מזיז את זה יותר ממה שהיוונים מרמזים."
 
-    return {"family_he": FAMILY_HE.get(fam, "מבנה"), "target": target,
-            "stop": stop, "time_exit": time_exit, "adjust": adjust, "warn": warn}
+    return {"family_he": FAMILY_HE.get(fam, "מבנה"),
+            "intuitive_he": INTUITIVE_NAME_HE.get(fam),
+            "needs": _NEEDS_HE.get(fam, _DEFAULT_NEEDS_HE),
+            "entry_check": _ENTRY_HE.get(fam, _DEFAULT_ENTRY_HE),
+            "monitor": _MONITOR_HE.get(fam, _DEFAULT_MONITOR_HE),
+            "target": target, "stop": stop, "time_exit": time_exit,
+            "adjust": adjust, "warn": warn}

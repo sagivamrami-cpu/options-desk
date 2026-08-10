@@ -119,5 +119,13 @@ def ledger_alerts(status_by_symbol: dict) -> list[Alert]:
                     f"new {bucket} idea: {p.name} ({p.expiry}), {side} "
                     f"${abs(p.entry_cost):.0f}, target ${p.target_pnl:.0f} / "
                     f"stop ${abs(p.stop_pnl):.0f}",
-                    {"bucket": bucket, "position_id": p.id}))
+                    # name/expiry/cost/target/stop/legs duplicated here (not just
+                    # in the English `message` above) because the Hebrew alert
+                    # renderer builds its text from `detail` only, never from
+                    # `message` -- without these fields it had no way to say
+                    # WHICH structure was recorded, only that one was.
+                    {"bucket": bucket, "position_id": p.id, "name": p.name,
+                     "expiry": p.expiry, "cost": p.entry_cost,
+                     "target_pnl": p.target_pnl, "stop_pnl": p.stop_pnl,
+                     "legs": p.legs}))
     return out

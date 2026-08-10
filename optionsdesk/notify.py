@@ -628,6 +628,97 @@ def format_desk_status_he(status_by_symbol: dict) -> str:
     return "\n".join(out)
 
 
+def format_eod_digest_he(status_by_symbol: dict, today) -> str:
+    """End-of-day scorecard: every tracked position marked to the closing
+    price, plus anything that closed today, with a green/red tally up front.
+
+    This is deliberately NOT format_desk_status_he: that one tells you what
+    to DO right now (management plan, adjustment rule); this one tells you
+    how the desk's own past recommendations actually DID, so the picture
+    accumulates into a track record over enough days rather than living only
+    in the moment each alert fired. Meant to be sent once, near the close --
+    not from watch.py's every-ten-minutes pass.
+    """
+    from .management import FAMILY_HE, _family
+
+    date_str = today.strftime("%d/%m/%Y") if hasattr(today, "strftime") else str(today)
+    today_str = today.isoformat() if hasattr(today, "isoformat") else str(today)
+    out = [f"{RLM}━━━━━━━━━━━━━━━━━━━━",
+          f"{RLM}<b>📊 סיכום סוף יום — {_lt(date_str)}</b>",
+          f"{RLM}<i>מבוסס על מחירי סגירה. מעקב ביצועים, לא המלצת מסחר.</i>", ""]
+
+    rows, empty_lines = [], []
+    for sym, buckets in status_by_symbol.items():
+        for bucket in ("daily", "weekly"):
+            info = buckets.get(bucket)
+            if info is None:
+                continue
+            label = BUCKET_LABEL_HE[bucket]
+
+            for closed in info.get("just_closed", []):
+                p = closed["position"]
+                rows.append({"sym": sym, "label": label, "name": p.name,
+                            "pnl": closed["pnl"], "cost": p.entry_cost,
+                            "opened_today": p.opened_at[:10] == today_str,
+                            "closed_today": True, "close_reason": p.close_reason})
+
+            if info["status"] == "existing":
+                m = info["mark"]
+                p = m["position"]
+                rows.append({"sym": sym, "label": label, "name": p.name,
+                            "pnl": m["pnl"], "cost": p.entry_cost,
+                            "opened_today": p.opened_at[:10] == today_str,
+                            "closed_today": False, "close_reason": None})
+            elif info["status"] == "new":
+                pos = info["position"]
+                rows.append({"sym": sym, "label": label, "name": pos.name,
+                            "pnl": 0.0, "cost": pos.entry_cost,
+                            "opened_today": True, "closed_today": False,
+                            "close_reason": None, "just_recorded": True})
+            elif info["status"] == "none":
+                empty_lines.append(f"{RLM}{_lt(_esc(sym))} · {label}: "
+                                   f"אין מבנה שעבר את מבחן העלויות")
+
+    if not rows and not empty_lines:
+        out.append(f"{RLM}<i>אין נתונים למעקב היום.</i>")
+        return "\n".join(out)
+
+    n_green = sum(1 for r in rows if r["pnl"] > 0)
+    n_red = sum(1 for r in rows if r["pnl"] < 0)
+    n_flat = len(rows) - n_green - n_red
+    tally = f"{RLM}<b>סה\"כ: {_lt(_n(n_green, 0))} ברווח 🟢  ·  {_lt(_n(n_red, 0))} בהפסד 🔴"
+    if n_flat:
+        tally += f"  ·  {_lt(_n(n_flat, 0))} ללא נתון עדיין"
+    out.append(tally + "</b>")
+    out.append("")
+
+    for r in rows:
+        icon = "🟢" if r["pnl"] > 0 else ("🔴" if r["pnl"] < 0 else "⚪")
+        fam_he = FAMILY_HE.get(_family(r["name"]), "מבנה")
+        out.append(f"{RLM}{icon} <b>{_lt(_esc(r['sym']))} · {r['label']}</b> "
+                   f"— {_esc(fam_he)} ({_lt(_esc(r['name']))})")
+
+        if r.get("just_recorded"):
+            out.append(f"{RLM}   נרשם עכשיו לראשונה — אין עדיין נתון P&L, "
+                       f"עלות כניסה {_lt('$' + _n(abs(r['cost']), 0))}")
+            continue
+
+        when = "נכנס היום" if r["opened_today"] else "פתוח מיום קודם"
+        if r["closed_today"]:
+            reason_he = {"target": "נסגר היום ביעד ✅", "stop": "נסגר היום בעצירה ⛔",
+                        "expired": "פקע היום"}.get(r["close_reason"], "נסגר היום")
+            when = reason_he
+        out.append(f"{RLM}   {when}  ·  עלות כניסה {_lt('$' + _n(abs(r['cost']), 0))}"
+                   f"  ·  P&L {'סופי' if r['closed_today'] else 'כרגע'} "
+                   f"{_lt('$' + _sn(r['pnl'], 0))}")
+
+    if empty_lines:
+        out.append("")
+        out.extend(empty_lines)
+
+    return "\n".join(out)
+
+
 def send_report_he(analyses: list[dict], artifact_url: str | None = None,
                    strategies: dict | None = None,
                    cfg: TelegramConfig | None = None,
@@ -714,7 +805,22 @@ def _alert_message_he(d: dict) -> str:
                f"— התזה נבחנת")
     if kind == "new_recommendation":
         bucket = "יומית" if det.get("bucket") == "daily" else "שבועית"
-        return f"הצעה {bucket} חדשה נרשמה למעקב"
+        name = det.get("name")
+        if not name:
+            return f"הצעה {bucket} חדשה נרשמה למעקב"
+        lines = [f"הצעה {bucket} חדשה — {_lt(_esc(name))}  "
+                f"(פקיעה {_lt(_esc(det.get('expiry', '')))})"]
+        legs = det.get("legs")
+        if legs:
+            lines.extend(_render_legs_he(legs))
+        cost = det.get("cost")
+        if cost is not None:
+            is_credit = cost < 0
+            lines.append(f"{RLM}נטו: {'קרדיט' if is_credit else 'חיוב'} "
+                        f"{_lt('$' + _n(abs(cost), 0))}"
+                        f"  ·  יעד {_lt('$' + _n(det.get('target_pnl', 0), 0))}"
+                        f"  ·  עצירה {_lt('$' + _n(abs(det.get('stop_pnl', 0)), 0))}")
+        return "\n".join(lines)
     return _esc(d.get("message", ""))          # unmapped kind: fall back rather than drop it
 
 

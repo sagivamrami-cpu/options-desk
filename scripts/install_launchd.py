@@ -40,6 +40,7 @@ LABELS = {
     "daily": "com.optionsdesk.daily",
     "collect": "com.optionsdesk.collect",
     "watch": "com.optionsdesk.watch",
+    "eod": "com.optionsdesk.eod",
 }
 
 # launchd hands jobs a minimal PATH; git and open need a real one.
@@ -72,6 +73,26 @@ def build_daily(args) -> dict:
         "WorkingDirectory": str(ROOT),
         "StandardOutPath": str(LOG_DIR / "daily.log"),
         "StandardErrorPath": str(LOG_DIR / "daily.err.log"),
+        "RunAtLoad": False,
+        "EnvironmentVariables": _ENV,
+    }
+
+
+def build_eod(args) -> dict:
+    hh, mm = _parse_at(args.at)
+    cmd = [str(PYTHON), str(ROOT / "scripts" / "eod_report.py"),
+           "--symbols", args.symbols, "--source", args.source]
+    if args.telegram:
+        cmd.append("--telegram")
+    return {
+        "Label": LABELS["eod"],
+        "ProgramArguments": cmd,
+        "StartCalendarInterval": [
+            {"Weekday": d, "Hour": hh, "Minute": mm} for d in range(1, 6)
+        ],
+        "WorkingDirectory": str(ROOT),
+        "StandardOutPath": str(LOG_DIR / "eod.log"),
+        "StandardErrorPath": str(LOG_DIR / "eod.err.log"),
         "RunAtLoad": False,
         "EnvironmentVariables": _ENV,
     }
@@ -138,7 +159,7 @@ def install(args):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     spec = {"daily": build_daily, "watch": build_watch,
-            "collect": build_collect}[args.job](args)
+            "collect": build_collect, "eod": build_eod}[args.job](args)
     path = plist_path(args.job)
     path.write_bytes(plistlib.dumps(spec))
 
@@ -153,6 +174,9 @@ def install(args):
         print(f"  runs    weekdays at {args.at} local, {args.symbols} via {args.source}")
         print(f"  opens   {'yes' if args.open else 'no'}")
         print(f"  logs    {LOG_DIR / 'daily.log'}")
+    elif args.job == "eod":
+        print(f"  runs    weekdays at {args.at} local, {args.symbols} via {args.source}")
+        print(f"  logs    {LOG_DIR / 'eod.log'}")
     elif args.job == "watch":
         every = f"{args.interval}s" if args.interval < 60 else f"{args.interval // 60} min"
         print(f"  runs    every {every}, RTH only, {args.symbols} via {args.source}")
@@ -183,7 +207,7 @@ def status(_):
         state = next((l.strip() for l in r.stdout.splitlines() if "state =" in l), "")
         exit_ = next((l.strip() for l in r.stdout.splitlines() if "last exit code" in l), "")
         print(f"{job:8s} loaded   {state}   {exit_}")
-    for name in ("daily.log", "watch.log", "collect.log"):
+    for name in ("daily.log", "watch.log", "collect.log", "eod.log"):
         log = LOG_DIR / name
         if log.exists():
             tail = log.read_text(encoding="utf-8").splitlines()[-5:]
@@ -203,7 +227,7 @@ def _uid():
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--job", choices=["daily", "watch", "collect"], default="daily")
+    ap.add_argument("--job", choices=["daily", "watch", "collect", "eod"], default="daily")
     ap.add_argument("--at", default="15:30", help="daily: local HH:MM (default 15:30)")
     ap.add_argument("--open", action="store_true", help="daily: open the report when done")
     ap.add_argument("--interval", type=int, default=300, help="collect: seconds between runs")

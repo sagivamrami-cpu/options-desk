@@ -567,3 +567,115 @@ def send_report_he(analyses: list[dict], artifact_url: str | None = None,
                    upcoming_events: list | None = None) -> bool:
     text = format_report_he(analyses, artifact_url, strategies, desk_status, upcoming_events)
     return send(text, cfg)
+
+
+# ======================================================================
+# Hebrew intraday alerts (watch.py --telegram)
+# ======================================================================
+
+ALERT_KIND_HE = {
+    "gamma_flip_crossed": "חצייית רמת ההיפוך",
+    "at_gamma_flip": "צמוד לרמת ההיפוך",
+    "gamma_regime_change": "שינוי משטר גאמה",
+    "vrp_sign_change": "היפוך סימן בפרמיית התנודתיות",
+    "positive_expectancy": "מבנה עם תוחלת חיובית",
+    "opportunity_gone": "ההזדמנות נעלמה",
+    "term_structure_inverted": "היפוך במבנה העתי",
+    "fit_quality": "כיסוי חלקי של המשטח",
+    "scan_failed": "הסריקה נכשלה",
+    "position_stop": "פוזיציה הגיעה לעצירה",
+    "position_target": "פוזיציה הגיעה ליעד",
+    "position_expired": "פוזיציה פקעה",
+    "strike_crossed": "חצייית סטרייק",
+    "new_recommendation": "המלצה חדשה",
+}
+
+_IMPLICATION_HE = {
+    # Keyed on crossed_down: True means spot just fell below the flip.
+    ("gamma_flip_crossed", True): (
+        "הגידור של הסוחרים עכשיו <b>מגביר</b> תנועות: קונים בעליות, מוכרים בירידות. "
+        "צפו לטווח רחב יותר וסיכון פערים גבוה יותר; להקטין גודל במכירת פרמיה."),
+    ("gamma_flip_crossed", False): (
+        "הגידור של הסוחרים עכשיו <b>מדכא</b> תנועות: מוכרים בעליות, קונים בירידות. "
+        "הטווח אמור להחזיק טוב יותר, וסטרייקים גדולים הופכים למגנטים."),
+}
+
+
+def _alert_message_he(d: dict) -> str:
+    """Rebuild the alert message in Hebrew from its structured detail dict
+    rather than translating the English sentence -- the numbers and their
+    meaning are what matter, and they are already sitting in `detail`."""
+    kind, det = d["kind"], d.get("detail") or {}
+    sym = d["symbol"]
+
+    if kind == "gamma_flip_crossed":
+        crossed_down = det.get("to_pct", 0) < 0
+        where = "מתחת לרמת" if crossed_down else "מעל רמת"
+        return (f"הספוט חצה {where} ההיפוך "
+               f"ב-{_lt(_n(det.get('flip')))} (עכשיו {_lt(_sn(det.get('to_pct')) + '%')})")
+    if kind == "at_gamma_flip":
+        return (f"הספוט במרחק {_lt(_sn(det.get('distance_pct')) + '%')} בלבד מרמת ההיפוך "
+               f"({_lt(_n(det.get('flip')))}) — המשטר יכול להתהפך בתנודה רגילה")
+    if kind == "gamma_regime_change":
+        return f"הגאמה הנטו התהפכה: {_esc(det.get('from'))} ← {_esc(det.get('to'))}"
+    if kind == "vrp_sign_change":
+        neg = det.get("vrp", 0) < 0
+        return (f"פרמיית התנודתיות עברה ל{'שלילי' if neg else 'חיובי'} "
+               f"({_lt(_sn((det.get('vrp') or 0)*100, 1))} נק')")
+    if kind == "positive_expectancy":
+        best = det.get("best", {})
+        return (f"{det.get('count')} מבנה/ים עוברים את מבחן העלויות ({_esc(det.get('reason'))}); "
+               f"הטוב ביותר: {_lt(_esc(best.get('name','')))} {_lt(_esc(best.get('expiry','')))} "
+               f"תוחלת {_lt('$' + _sn(best.get('ev_empirical'), 2))}")
+    if kind == "opportunity_gone":
+        return f"ה-{det.get('was')} מבנה/ים שעברו את מבחן העלויות כבר לא עוברים"
+    if kind == "term_structure_inverted":
+        return "התנודתיות הקרובה יקרה מהרחוקה — סימן ללחץ בשוק"
+    if kind == "fit_quality":
+        return f"{len(det.get('rejected', {}))} פקיעות לא הותאמו — כיסוי המשטח חלקי"
+    if kind == "scan_failed":
+        return f"הסריקה נכשלה: {_esc(d.get('message',''))}"
+    if kind in ("position_stop", "position_target", "position_expired"):
+        verb = {"position_stop": "הגיעה לעצירה", "position_target": "הגיעה ליעד",
+               "position_expired": "פקעה"}[kind]
+        bucket = "יומית" if det.get("bucket") == "daily" else "שבועית"
+        return f"פוזיציה {bucket} {verb} — P&L {_lt('$' + _sn(det.get('pnl'), 0))}"
+    if kind == "strike_crossed":
+        bucket = "יומית" if det.get("bucket") == "daily" else "שבועית"
+        return (f"פוזיציה {bucket}: המחיר חצה את הסטרייק {_lt(_n(det.get('strike'), 0))} "
+               f"— התזה נבחנת")
+    if kind == "new_recommendation":
+        bucket = "יומית" if det.get("bucket") == "daily" else "שבועית"
+        return f"הצעה {bucket} חדשה נרשמה למעקב"
+    return _esc(d.get("message", ""))          # unmapped kind: fall back rather than drop it
+
+
+def format_alerts_he(alerts: list) -> str:
+    """Hebrew mirror of format_alerts, used by watch.py --telegram."""
+    if not alerts:
+        return ""
+    icon = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
+    out = [f"{RLM}<b>שולחן האופציות — {len(alerts)} התראות</b>", ""]
+    for a in alerts:
+        d = a.to_dict() if hasattr(a, "to_dict") else dict(a)
+        label = ALERT_KIND_HE.get(d["kind"], d["kind"])
+        out.append(f"{RLM}{icon.get(d['severity'], '•')} <b>{_lt(_esc(d['symbol']))}</b> "
+                   f"— {_esc(label)}")
+        out.append(f"{RLM}   {_alert_message_he(d)}")
+        # crossed_down must match the SAME test _alert_message_he used above,
+        # or the implication text ends up describing the opposite crossing.
+        key = (d["kind"], (d.get("detail") or {}).get("to_pct", 0) < 0) \
+            if d["kind"] == "gamma_flip_crossed" else None
+        imp_he = _IMPLICATION_HE.get(key)
+        if imp_he:
+            out.append(f"{RLM}   <i>{imp_he}</i>")
+        out.append("")
+    return "\n".join(out)
+
+
+def send_alerts_he(alerts: list, cfg: TelegramConfig | None = None) -> bool:
+    if not alerts:
+        return False
+    critical = any((a.to_dict() if hasattr(a, "to_dict") else a)["severity"] == "critical"
+                   for a in alerts)
+    return send(format_alerts_he(alerts), cfg, silent=not critical)

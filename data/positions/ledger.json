@@ -1,0 +1,509 @@
+[
+  {
+    "id": "df4812cdff0a",
+    "symbol": "GLD",
+    "bucket": "daily",
+    "name": "bull put spread 399/393",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 399.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 393.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T16:34:24",
+    "entry_spot": 398.495,
+    "entry_cost": -206.99999999999997,
+    "max_profit": 206.99999999999997,
+    "max_loss": -393.0,
+    "target_pnl": 103.49999999999999,
+    "stop_pnl": -393.0,
+    "status": "closed",
+    "closed_at": "2026-08-10T16:34:24",
+    "close_reason": "expired",
+    "final_pnl": -34.00000000000003,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.6226531311250789,
+      "strike_side": {
+        "399.0": "below"
+      }
+    }
+  },
+  {
+    "id": "c71187b11906",
+    "symbol": "QQQ",
+    "bucket": "daily",
+    "name": "calendar 722C 2026-08-10/2026-08-11",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "C",
+        "strike": 722.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-11",
+        "right": "C",
+        "strike": 722.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T16:34:35",
+    "entry_spot": 723.03,
+    "entry_cost": 129.99999999999997,
+    "max_profit": 302.26390248833013,
+    "max_loss": -129.9999999999034,
+    "target_pnl": 105.79236587091555,
+    "stop_pnl": -129.99999999999997,
+    "status": "closed",
+    "closed_at": "2026-08-10T16:34:35",
+    "close_reason": "expired",
+    "final_pnl": -18.999999999999943,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.7085957745339608,
+      "strike_side": {
+        "722.0": "above"
+      }
+    }
+  },
+  {
+    "id": "cbbbb5ace9a2",
+    "symbol": "QQQ",
+    "bucket": "weekly",
+    "name": "bear call spread 730/733",
+    "legs": [
+      {
+        "expiry": "2026-08-13",
+        "right": "C",
+        "strike": 730.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-13",
+        "right": "C",
+        "strike": 733.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-13",
+    "opened_at": "2026-08-10T16:34:35",
+    "entry_spot": 723.03,
+    "entry_cost": -85.99999999999999,
+    "max_profit": 85.99999999999999,
+    "max_loss": -213.90138607441025,
+    "target_pnl": 42.99999999999999,
+    "stop_pnl": -171.99999999999997,
+    "status": "open",
+    "closed_at": null,
+    "close_reason": null,
+    "final_pnl": null,
+    "meta": {
+      "dte_at_open": 3.0,
+      "pop_at_open": 0.706393547937845,
+      "strike_side": {
+        "730.0": "below"
+      }
+    }
+  },
+  {
+    "id": "8c1e74ab4abb",
+    "symbol": "GLD",
+    "bucket": "daily",
+    "name": "bull put spread 399/393",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 399.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 393.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T16:44:45",
+    "entry_spot": 398.495,
+    "entry_cost": -206.99999999999997,
+    "max_profit": 206.99999999999997,
+    "max_loss": -393.0,
+    "target_pnl": 103.49999999999999,
+    "stop_pnl": -393.0,
+    "status": "closed",
+    "closed_at": "2026-08-10T16:44:45",
+    "close_reason": "expired",
+    "final_pnl": -34.00000000000003,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.6226531311250789,
+      "strike_side": {
+        "399.0": "below"
+      }
+    }
+  },
+  {
+    "id": "1601e505e455",
+    "symbol": "QQQ",
+    "bucket": "daily",
+    "name": "calendar 722C 2026-08-10/2026-08-11",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "C",
+        "strike": 722.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-11",
+        "right": "C",
+        "strike": 722.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T16:44:54",
+    "entry_spot": 723.03,
+    "entry_cost": 129.99999999999997,
+    "max_profit": 302.26390248833013,
+    "max_loss": -129.9999999999034,
+    "target_pnl": 105.79236587091555,
+    "stop_pnl": -129.99999999999997,
+    "status": "closed",
+    "closed_at": "2026-08-10T16:44:54",
+    "close_reason": "expired",
+    "final_pnl": -18.999999999999943,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.7085957745339608,
+      "strike_side": {
+        "722.0": "above"
+      }
+    }
+  },
+  {
+    "id": "f771c15c1e90",
+    "symbol": "GLD",
+    "bucket": "daily",
+    "name": "bull put spread 399/393",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 399.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 393.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T16:55:04",
+    "entry_spot": 398.495,
+    "entry_cost": -206.99999999999997,
+    "max_profit": 206.99999999999997,
+    "max_loss": -393.0,
+    "target_pnl": 103.49999999999999,
+    "stop_pnl": -393.0,
+    "status": "closed",
+    "closed_at": "2026-08-10T16:55:04",
+    "close_reason": "expired",
+    "final_pnl": -34.00000000000003,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.6226531311250789,
+      "strike_side": {
+        "399.0": "below"
+      }
+    }
+  },
+  {
+    "id": "c64c0dff6427",
+    "symbol": "QQQ",
+    "bucket": "daily",
+    "name": "calendar 722C 2026-08-10/2026-08-11",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "C",
+        "strike": 722.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-11",
+        "right": "C",
+        "strike": 722.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T16:55:18",
+    "entry_spot": 723.03,
+    "entry_cost": 129.99999999999997,
+    "max_profit": 302.26390248833013,
+    "max_loss": -129.9999999999034,
+    "target_pnl": 105.79236587091555,
+    "stop_pnl": -129.99999999999997,
+    "status": "closed",
+    "closed_at": "2026-08-10T16:55:18",
+    "close_reason": "expired",
+    "final_pnl": -18.999999999999943,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.7085957745339608,
+      "strike_side": {
+        "722.0": "above"
+      }
+    }
+  },
+  {
+    "id": "9b9353ec66a3",
+    "symbol": "GLD",
+    "bucket": "daily",
+    "name": "bull put spread 399/393",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 399.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 393.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T17:05:31",
+    "entry_spot": 398.495,
+    "entry_cost": -206.99999999999997,
+    "max_profit": 206.99999999999997,
+    "max_loss": -393.0,
+    "target_pnl": 103.49999999999999,
+    "stop_pnl": -393.0,
+    "status": "closed",
+    "closed_at": "2026-08-10T17:05:31",
+    "close_reason": "expired",
+    "final_pnl": -34.00000000000003,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.6226531311250789,
+      "strike_side": {
+        "399.0": "below"
+      }
+    }
+  },
+  {
+    "id": "0102026ad65b",
+    "symbol": "QQQ",
+    "bucket": "daily",
+    "name": "calendar 722C 2026-08-10/2026-08-11",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "C",
+        "strike": 722.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-11",
+        "right": "C",
+        "strike": 722.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T17:05:39",
+    "entry_spot": 723.03,
+    "entry_cost": 129.99999999999997,
+    "max_profit": 302.26390248833013,
+    "max_loss": -129.9999999999034,
+    "target_pnl": 105.79236587091555,
+    "stop_pnl": -129.99999999999997,
+    "status": "closed",
+    "closed_at": "2026-08-10T17:05:39",
+    "close_reason": "expired",
+    "final_pnl": -18.999999999999943,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.7085957745339608,
+      "strike_side": {
+        "722.0": "above"
+      }
+    }
+  },
+  {
+    "id": "371dfb6ec712",
+    "symbol": "GLD",
+    "bucket": "daily",
+    "name": "bull put spread 399/393",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 399.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 393.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T17:15:49",
+    "entry_spot": 398.495,
+    "entry_cost": -206.99999999999997,
+    "max_profit": 206.99999999999997,
+    "max_loss": -393.0,
+    "target_pnl": 103.49999999999999,
+    "stop_pnl": -393.0,
+    "status": "closed",
+    "closed_at": "2026-08-10T17:15:49",
+    "close_reason": "expired",
+    "final_pnl": -34.00000000000003,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.6226531311250789,
+      "strike_side": {
+        "399.0": "below"
+      }
+    }
+  },
+  {
+    "id": "67e3482933f7",
+    "symbol": "QQQ",
+    "bucket": "daily",
+    "name": "calendar 722C 2026-08-10/2026-08-11",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "C",
+        "strike": 722.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-11",
+        "right": "C",
+        "strike": 722.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T17:15:58",
+    "entry_spot": 723.03,
+    "entry_cost": 129.99999999999997,
+    "max_profit": 302.26390248833013,
+    "max_loss": -129.9999999999034,
+    "target_pnl": 105.79236587091555,
+    "stop_pnl": -129.99999999999997,
+    "status": "closed",
+    "closed_at": "2026-08-10T17:15:58",
+    "close_reason": "expired",
+    "final_pnl": -18.999999999999943,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.7085957745339608,
+      "strike_side": {
+        "722.0": "above"
+      }
+    }
+  },
+  {
+    "id": "15ee7be7d519",
+    "symbol": "GLD",
+    "bucket": "daily",
+    "name": "bull put spread 399/393",
+    "legs": [
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 399.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-10",
+        "right": "P",
+        "strike": 393.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-10",
+    "opened_at": "2026-08-10T17:26:29",
+    "entry_spot": 398.495,
+    "entry_cost": -206.99999999999997,
+    "max_profit": 206.99999999999997,
+    "max_loss": -393.0,
+    "target_pnl": 103.49999999999999,
+    "stop_pnl": -393.0,
+    "status": "closed",
+    "closed_at": "2026-08-10T17:26:29",
+    "close_reason": "expired",
+    "final_pnl": -34.00000000000003,
+    "meta": {
+      "dte_at_open": 0.3,
+      "pop_at_open": 0.6226531311250789,
+      "strike_side": {
+        "399.0": "below"
+      }
+    }
+  },
+  {
+    "id": "51182bd40984",
+    "symbol": "GLD",
+    "bucket": "weekly",
+    "name": "calendar 400C 2026-08-14/2026-08-17",
+    "legs": [
+      {
+        "expiry": "2026-08-14",
+        "right": "C",
+        "strike": 400.0,
+        "qty": -1
+      },
+      {
+        "expiry": "2026-08-17",
+        "right": "C",
+        "strike": 400.0,
+        "qty": 1
+      }
+    ],
+    "expiry": "2026-08-14",
+    "opened_at": "2026-08-10T17:36:43",
+    "entry_spot": 398.55999755859375,
+    "entry_cost": 84.99999999999997,
+    "max_profit": 253.6894087409933,
+    "max_loss": -84.99999991839032,
+    "target_pnl": 88.79129305934765,
+    "stop_pnl": -84.99999999999997,
+    "status": "open",
+    "closed_at": null,
+    "close_reason": null,
+    "final_pnl": null,
+    "meta": {
+      "dte_at_open": 4.0,
+      "pop_at_open": 0.48218361987061825,
+      "strike_side": {
+        "400.0": "below"
+      }
+    }
+  }
+]

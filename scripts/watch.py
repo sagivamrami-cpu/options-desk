@@ -91,6 +91,8 @@ def main():
     ap.add_argument("--market-hours-only", action="store_true")
     ap.add_argument("--notify", action="store_true", help="macOS notification on alert")
     ap.add_argument("--telegram", action="store_true", help="push alerts to Telegram")
+    ap.add_argument("--lang", default="he", choices=["he", "en"],
+                    help="alert language on Telegram (default Hebrew)")
     ap.add_argument("--quiet", action="store_true", help="print only when a rule fires")
     ap.add_argument("--positions", action="store_true", default=True,
                     help="track daily/weekly recommendations against the ledger")
@@ -192,8 +194,9 @@ def main():
 
         if args.telegram:
             from optionsdesk import notify
+            sender = notify.send_alerts_he if args.lang == "he" else notify.send_alerts
             try:
-                notify.send_alerts(fired)
+                sender(fired)
             except Exception as exc:
                 print(f"[watch] telegram failed: {exc}", file=sys.stderr)
 

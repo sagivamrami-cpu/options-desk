@@ -111,10 +111,10 @@ def main() -> int:
     print("\nSending a test message…")
     try:
         notify.send(
-            "<b>📈 Options Desk connected</b>\n\n"
-            "You will get the positioning report each weekday, and intraday "
-            "alerts only when the regime actually changes.\n\n"
-            "<i>Positioning read, not a forecast. Not financial advice.</i>",
+            "‏<b>📈 שולחן האופציות מחובר</b>\n\n"
+            "‏תקבל את הדוח היומי בכל יום מסחר, "
+            "והתראות תוך-יומיות רק כשהמצב באמת משתנה.\n\n"
+            "‏<i>קריאת מיצוב, לא תחזית. אין באמור ייעוץ השקעות.</i>",
             cfg)
     except Exception as exc:
         print(f"Test send failed: {exc}", file=sys.stderr)

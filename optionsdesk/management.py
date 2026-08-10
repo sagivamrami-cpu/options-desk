@@ -32,7 +32,26 @@ from __future__ import annotations
 
 import math
 
-__all__ = ["plan_for", "ManagementPlan"]
+__all__ = ["plan_for", "target_stop_for", "has_bounded_max_profit", "ManagementPlan"]
+
+# Families whose scanner-reported max_profit is a real, interior maximum --
+# a butterfly peaks at its body, a calendar at its pin (both verified by
+# direct computation), a credit vertical/condor/iron-butterfly is capped by
+# its own wing width. Everything NOT in this set has its "maximum" only
+# because a pricing grid stops somewhere -- a long straddle, a protective put
+# (unbounded stock upside), a diagonal or PMCC's long leg -- and displaying
+# that number as "max profit" states a technical parameter (how wide the
+# grid was drawn) as if it were an economic fact about the structure.
+_BOUNDED_MAX_PROFIT_FAMILIES = frozenset({
+    "vertical", "condor", "iron_butterfly", "butterfly", "calendar",
+    "covered_call", "csp",
+})
+
+
+def has_bounded_max_profit(name: str) -> bool:
+    """Is this candidate's reported max_profit a real number, or a grid-edge
+    artifact that should never be shown as 'the maximum'?"""
+    return _family(name) in _BOUNDED_MAX_PROFIT_FAMILIES
 
 # Below this many days the position is gamma-dominated rather than
 # probability-dominated. See the module docstring.
@@ -85,6 +104,63 @@ def _family(name: str) -> str:
     if "spread" in n:
         return "vertical"
     return "other"
+
+
+def target_stop_for(candidate: dict) -> tuple[float, float]:
+    """The NUMBERS behind plan_for()'s target/stop text -- kept in exactly one
+    place so the number and the words can never disagree.
+
+    This function exists because they already did once. A long straddle's
+    scanner-reported max_profit is a GRID-TRUNCATION ARTIFACT: the payoff
+    grows monotonically toward both ends of whatever pricing grid was used,
+    with no real interior maximum, unlike a butterfly or a calendar (verified
+    directly -- a calendar's maximum sits exactly at the pin, at the strike,
+    not at a grid edge). The ledger used to compute its numeric target as
+    35% of max_profit for every debit structure alike; on a $306 debit long
+    straddle that produced a target of $10,004 -- thirty-two times the debit
+    paid -- while the text next to it said "close at 75-100% gain". Families
+    whose maximum genuinely lives at the edge of the grid are now sized off
+    the debit paid instead of off that number.
+    """
+    name = str(candidate.get("name", ""))
+    fam = _family(name)
+    cost = float(candidate.get("cost", 0.0))
+    max_p = float(candidate.get("max_profit", float("nan")))
+    max_l = float(candidate.get("max_loss", float("nan")))
+    is_credit = cost < 0
+    credit = abs(cost) if is_credit else 0.0
+    debit = abs(cost) if not is_credit else 0.0
+
+    if fam in ("vertical", "condor", "iron_butterfly", "undefined") and is_credit:
+        target = credit * 0.5
+        stop = -min(credit * 2.0, abs(max_l)) if math.isfinite(max_l) else -credit * 2.0
+    elif fam in ("butterfly", "calendar") and math.isfinite(max_p):
+        # A genuinely bounded interior maximum, not a grid-edge artifact.
+        target = max_p * 0.35
+        stop = -debit if debit > 0 else -credit * 2.0
+    elif fam == "straddle_long":
+        target = debit * 0.85          # midpoint of the "75-100% of debit" band
+        stop = -debit
+    elif fam in ("diagonal", "pmcc"):
+        target = credit * 0.5 if is_credit else debit * 0.5
+        stop = -debit if debit > 0 else -credit * 2.0
+    elif fam in ("covered_call", "csp"):
+        target = credit * 0.5
+        stop = -abs(max_l) if math.isfinite(max_l) else -credit * 2.0
+    elif fam == "protective_put":
+        # Unbounded by construction (long stock) and not something the
+        # daily/weekly auto-picker ever selects in the first place (it only
+        # draws from scan['candidates'], never scan['stock_based']). inf means
+        # the target can mathematically never trigger, which is the honest
+        # answer for a structure with no real profit ceiling -- not a magic
+        # number standing in for one.
+        target = float("inf")
+        stop = -debit
+    else:
+        target = debit * 0.5 if debit > 0 else credit * 0.5
+        stop = -debit if debit > 0 else -credit * 2.0
+
+    return float(target), float(stop)
 
 
 def plan_for(candidate: dict, spot: float) -> ManagementPlan:

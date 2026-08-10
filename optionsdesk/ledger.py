@@ -125,18 +125,19 @@ class Ledger:
         """
         legs = candidate_row["_legs"]
         cost = float(candidate_row["cost"])
-        credit = abs(cost) if cost < 0 else 0.0
         max_p = float(candidate_row.get("max_profit", float("nan")))
         max_l = float(candidate_row.get("max_loss", float("nan")))
 
-        # Same defaults as management.py: 50% of credit/max-profit as target,
-        # 2x credit (or the structure's own max loss) as stop.
-        if cost < 0:
-            target = credit * 0.5
-            stop = -min(credit * 2.0, abs(max_l)) if np.isfinite(max_l) else -credit * 2.0
-        else:
-            target = max_p * 0.35 if np.isfinite(max_p) else abs(cost) * 0.5
-            stop = -abs(cost)
+        # Delegate to management.py rather than keeping a second, independent
+        # heuristic here. The two used to disagree: this method's old formula
+        # (35% of max_profit for every debit structure) and management.py's
+        # descriptive text ("75-100% of the debit" for a long straddle) were
+        # computing different things from the same candidate, and a long
+        # straddle's max_profit is a grid-truncation artifact in the first
+        # place -- see target_stop_for()'s docstring for the number that
+        # surfaced this.
+        from .management import target_stop_for
+        target, stop = target_stop_for(candidate_row)
 
         pos = Position(
             id=uuid.uuid4().hex[:12],

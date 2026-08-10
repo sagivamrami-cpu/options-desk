@@ -42,10 +42,29 @@ SCAN_COLUMNS = [
 ]
 
 
-def _leg_records(st: X.Structure) -> list[dict]:
-    """Serialise a Structure's legs so the ledger can rebuild it exactly."""
-    return [{"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
-             "strike": l.strike, "qty": l.qty} for l in st.legs]
+def _leg_records(st: X.Structure, df: pd.DataFrame | None = None) -> list[dict]:
+    """Serialise a Structure's legs so the ledger can rebuild it exactly, and
+    -- when a chain is supplied -- attach each leg's OWN quote.
+
+    This is what lets a rendered message show "buy put 695 @ $3.20" instead of
+    just a structure name and an aggregate cost. The per-leg price is looked
+    up here, at generation time, off the SAME chain the structure was priced
+    against, so the displayed leg prices are never a stale second lookup.
+    """
+    out = []
+    for l in st.legs:
+        rec = {"expiry": str(pd.Timestamp(l.expiry).date()), "right": l.right,
+               "strike": l.strike, "qty": l.qty}
+        if df is not None and l.right != "S":
+            m = df[(df["expiry"] == pd.Timestamp(l.expiry)) & (df["right"] == l.right)
+                   & (np.isclose(df["strike"], l.strike))]
+            if len(m):
+                row = m.iloc[0]
+                rec["bid"] = float(row["bid"]) if row["bid"] == row["bid"] else None
+                rec["ask"] = float(row["ask"]) if row["ask"] == row["ask"] else None
+                rec["mid"] = float(row["mid"]) if row["mid"] == row["mid"] else None
+        out.append(rec)
+    return out
 
 
 def week_friday(today: _dt.date) -> _dt.date:
@@ -207,7 +226,7 @@ def scan_symbol(symbol: str, source: str = "auto", max_expiries: int = 8,
             rec = {
                 "symbol": snap.symbol, "expiry": str(pd.Timestamp(exp).date()),
                 "dte": round(f["T"] * 365, 1), "name": st.name, "structure": str(st),
-                "_legs": _leg_records(st),
+                "_legs": _leg_records(st, df),
                 "requires_shares": bool(st.meta.get("requires_shares")),
                 "capital_required": st.meta.get("capital_required"),
                 "cost": rn_res["cost"], "slippage": rn_res["slippage"],
@@ -246,7 +265,7 @@ def scan_symbol(symbol: str, source: str = "auto", max_expiries: int = 8,
                 rec = {
                     "symbol": snap.symbol, "expiry": str(pd.Timestamp(near).date()),
                     "dte": round(f["T"] * 365, 1), "name": st.name, "structure": str(st),
-                    "_legs": _leg_records(st),
+                    "_legs": _leg_records(st, df),
                     "cost": rn_res["cost"], "slippage": rn_res["slippage"],
                     "ev_risk_neutral": rn_res["ev"],
                     "max_profit": rn_res["max_profit"], "max_loss": rn_res["max_loss"],

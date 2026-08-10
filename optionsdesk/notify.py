@@ -213,7 +213,7 @@ def format_alerts(alerts: list) -> str:
 def format_strategies_en(strategies: dict, per_symbol: int = 2) -> str:
     """English mirror of format_strategies_he. Same rule: only structures with
     genuinely positive expectancy after costs are proposed."""
-    from .management import plan_for
+    from .management import plan_for, has_bounded_max_profit
 
     out = ["━" * 20, "<b>🎯 Structure candidates</b>", ""]
     any_found = False
@@ -232,7 +232,10 @@ def format_strategies_en(strategies: dict, per_symbol: int = 2) -> str:
             out.append(f"  expiry {_esc(row['expiry'])} ({_n(row['dte'], 0)}d)")
             out.append(f"  {'credit' if cost < 0 else 'debit'} ${_n(abs(cost), 0)}"
                        f" · slippage ${_n(row.get('slippage', 0), 0)}")
-            out.append(f"  max profit ${_n(row['max_profit'], 0)} · "
+            profit_txt = (f"${_n(row['max_profit'], 0)}"
+                         if has_bounded_max_profit(row['name'])
+                         else "unbounded (theoretical)")
+            out.append(f"  max profit {profit_txt} · "
                        f"max loss ${_n(abs(row['max_loss']), 0)}")
             out.append(f"  EV ${_sn(row['ev_empirical'], 2)} · "
                        f"POP {_n(float(row['pop_empirical'])*100, 0)}%")
@@ -405,6 +408,37 @@ def format_report_he(analyses: list[dict], artifact_url: str | None = None,
     return "\n".join(out)
 
 
+def _render_legs_he(legs: list) -> list[str]:
+    """One line per leg, execution-ticket style: action, right, strike, and
+    the price at the side of the market you would actually cross -- the ask
+    to buy, the bid to sell, matching price_structure()'s own convention
+    rather than showing mid (which nobody can actually transact at).
+
+    Buys are listed before sells (qty descending), which is also the natural
+    reading order for a credit spread: "buy the protection, sell the credit".
+    """
+    ordered = sorted(legs, key=lambda l: -l["qty"])
+    lines = []
+    for i, l in enumerate(ordered, 1):
+        qty = l["qty"]
+        action = "קנייה" if qty > 0 else "מכירה"
+        mult = f" ×{abs(qty)}" if abs(qty) != 1 else ""
+
+        if l["right"] == "S":
+            lines.append(f"{RLM}  {i}. {action} — 100 מניות במחיר השוק{mult}")
+            continue
+
+        right_he = "קול" if l["right"] == "C" else "פוט"
+        strike = _lt(_n(l["strike"], 2))
+        bid, ask, mid = l.get("bid"), l.get("ask"), l.get("mid")
+        px = (ask if qty > 0 else bid)
+        px = px if px is not None else mid
+        price_txt = (f"{_lt('$' + _n(px, 2))} ליחידה ({_lt('$' + _n(px * 100, 0))} לחוזה)"
+                    if px is not None else "מחיר לא זמין כרגע")
+        lines.append(f"{RLM}  {i}. {action} — {right_he} {strike}{mult} — {price_txt}")
+    return lines
+
+
 def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
     """Concrete structures with strikes, cost, P&L and a management plan.
 
@@ -414,7 +448,7 @@ def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
     and presenting one as a suggestion would be exactly the confusion this
     project exists to avoid.
     """
-    from .management import plan_he
+    from .management import has_bounded_max_profit, plan_he
 
     out = [f"{RLM}━━━━━━━━━━━━━━━━━━━━", f"{RLM}<b>🎯 הצעות מבנה</b>", ""]
     any_found = False
@@ -435,13 +469,27 @@ def format_strategies_he(strategies: dict, per_symbol: int = 2) -> str:
             is_credit = cost < 0
 
             out.append(f"{RLM}<b>{_lt(_esc(sym))} · {_esc(p['family_he'])}</b>")
-            out.append(f"{RLM}{_lt(_esc(row['name']))}")
             out.append(f"{RLM}פקיעה: {_lt(_esc(row['expiry']))} "
                        f"({_lt(_n(row['dte'], 0))} ימים)")
-            out.append(f"{RLM}{'קרדיט' if is_credit else 'חיוב'}: "
+            out.append(f"{RLM}<b>לביצוע:</b>")
+            legs = row.get("_legs")
+            if legs:
+                out.extend(_render_legs_he(legs))
+            else:
+                out.append(f"{RLM}  {_lt(_esc(row['name']))}")
+            out.append(f"{RLM}נטו: {'קרדיט' if is_credit else 'חיוב'} "
                        f"{_lt('$' + _n(abs(cost), 0))}"
-                       f"  ·  עלות מרווח {_lt('$' + _n(row.get('slippage', 0), 0))}")
-            out.append(f"{RLM}רווח מקסימלי: {_lt('$' + _n(row['max_profit'], 0))}"
+                       f"  ·  עלות מרווח (bid/ask) {_lt('$' + _n(row.get('slippage', 0), 0))}")
+            # A long straddle's (and similar families') scanner-reported
+            # max_profit is a grid-truncation artifact -- the payoff grows
+            # monotonically toward the edge of whatever probability grid was
+            # used, with no real interior maximum, unlike a butterfly's or a
+            # calendar's. Showing a specific dollar figure there states a
+            # technical parameter as if it were a fact about the structure.
+            profit_txt = (_lt('$' + _n(row['max_profit'], 0))
+                         if has_bounded_max_profit(row['name'])
+                         else "בלתי מוגבל (תיאורטית)")
+            out.append(f"{RLM}רווח מקסימלי: {profit_txt}"
                        f"  ·  הפסד מקסימלי: {_lt('$' + _n(abs(row['max_loss']), 0))}")
             out.append(f"{RLM}תוחלת: {_lt('$' + _sn(row['ev_empirical'], 2))}"
                        f"  ·  סיכוי לרווח: {_lt(_n(float(row['pop_empirical'])*100, 0) + '%')}")
@@ -542,9 +590,12 @@ def format_desk_status_he(status_by_symbol: dict) -> str:
             elif info["status"] == "new":
                 pos, cand = info["position"], info["candidate"]
                 cost = pos.entry_cost
-                out.append(f"{RLM}  <b>המלצה חדשה:</b> {_lt(_esc(pos.name))}")
-                out.append(f"{RLM}  פקיעה {_lt(_esc(pos.expiry))}"
-                           f"  ·  {'קרדיט' if cost<0 else 'חיוב'} {_lt('$' + _n(abs(cost),0))}")
+                out.append(f"{RLM}  <b>המלצה חדשה — {_lt(_esc(pos.name))}</b>")
+                out.append(f"{RLM}  פקיעה {_lt(_esc(pos.expiry))}")
+                out.append(f"{RLM}  <b>לביצוע:</b>")
+                if pos.legs:
+                    out.extend(_render_legs_he(pos.legs))
+                out.append(f"{RLM}  נטו: {'קרדיט' if cost<0 else 'חיוב'} {_lt('$' + _n(abs(cost),0))}")
                 out.append(f"{RLM}  יעד {_lt('$' + _n(pos.target_pnl,0))}"
                            f"  ·  עצירה {_lt('$' + _n(abs(pos.stop_pnl),0))}"
                            f"  ·  סיכוי לרווח {_lt(_n(float(cand.get('pop_empirical',0))*100,0)+'%')}")
